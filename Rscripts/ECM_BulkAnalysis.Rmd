@@ -1,0 +1,198 @@
+---
+title: "ECM_BulkAnalysis"
+output: html_document
+date: "2025-07-31"
+---
+
+#RNAseq ECM Analysis
+
+Lets look at the gene exppression of ECM genes across primary and recurrent GBM in the TCGA and CGGA datasets. 
+
+## Download and upload input data
+
+Data downloaded from https://www.cgga.org.cn/download.jsp and https://gliovis.bioinfo.cnio.es/
+
+### Filtering data to only include samples that follow WHO 2021 classification. 
+
+Removed Samples that are not classified as GBM. Removed samples that do not have IDH-Status = Wildtype
+
+```{r}
+# CGGA phenotype
+cgga_meta <- read.delim("/Data/Inputs/2025-07-31_CGGA_pheno.txt", check.names = FALSE, stringsAsFactors = FALSE)
+
+# TCGA phenotype
+tcga_meta <- read.delim("/Data/Inputs/2025-07-31_TCGA_GBM_pheno.txt", check.names = FALSE, stringsAsFactors = FALSE)
+```
+
+CGGA Filtering
+```{r}
+cgga_filtered_meta <- cgga_meta %>%
+  mutate(
+    Histology = trimws(tolower(Histology)),
+    IDH_status = trimws(tolower(IDH_status)),
+    Recurrence = trimws(tolower(Recurrence)),
+    co_del_1p19q = trimws(tolower(co_del_1p19q))
+  ) %>%
+  filter(
+    Histology == "gbm" &
+    IDH_status == "wildtype" &
+    Recurrence != "secondary" &
+    co_del_1p19q != "codel"
+  )
+
+```
+
+TCGA Filtering
+```{r}
+tcga_filtered_meta <- tcga_meta %>%
+  mutate(
+    Histology = trimws(tolower(Histology)),
+    IDH1_status = trimws(tolower(IDH1_status))
+  ) %>%
+  filter(
+    (Histology == "gbm" & IDH1_status == "wild-type") |
+    (Histology == "non-tumor")
+  )
+```
+
+Okay, now all data has been filtered to just include GBM, IDH WT, and non-codel qp19q. 
+
+### Match filtered data to expression data. 
+
+For CGGA
+```{r}
+# Load CGGA expression data
+expr_raw <- read.delim("/Data/Inputs/CGGA.mRNAseq_693.RSEM-genes.20200506.txt", row.names = 1, check.names = FALSE)
+
+# Match sample between the metadata and the expression
+matched_samples <- intersect(colnames(expr_raw), cgga_filtered_meta$Sample)
+
+# Subset data
+CGGA_expr <- expr_raw[, matched_samples]
+cgga_filtered_meta <- cgga_filtered_meta[cgga_filtered_meta$Sample %in% matched_samples, ]
+```
+
+For TCGA
+```{r}
+# Load TCGA expression data
+tcga_expr_raw <- read.delim("/Data/Inputs/2025-07-31_TCGA_GBM_expression.txt", row.names = 1, check.names = FALSE)
+
+# Transpose because expression data has sample id as row
+tcga_expr_fixed <- as.data.frame(t(tcga_expr_raw))
+
+# Match
+matched_samples <- intersect(colnames(tcga_expr_fixed), tcga_filtered_meta$Sample)
+
+# Subset
+TCGA_expr <- tcga_expr_fixed[, matched_samples]
+tcga_filtered_meta <- tcga_filtered_meta[tcga_filtered_meta$Sample %in% matched_samples, ]
+```
+
+### CGGA Data is not Log2 transformed
+
+```{r}
+# Apply log2(x + 1) transformation to all values
+CGGA_expr_log2 <- log2(CGGA_expr + 1)
+
+# Sanity check: look at value range
+summary(as.numeric(unlist(CGGA_expr_log2[, 1:5])))
+```
+
+## GO ECM Gene Set Analysis
+
+Gene set to be used GO:0031012 (Extracellular Matrix)
+
+```{r}
+# Load biomaRt
+library(biomaRt)
+
+# Connect to Ensembl BioMart (human dataset)
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+# Query human genes annotated with GO:0031012
+ecm_genes_raw <- getBM(
+  attributes = c("hgnc_symbol", "ensembl_gene_id", "go_id", "name_1006"),
+  filters = "go",
+  values = "GO:0031012",
+  mart = ensembl
+)
+
+# Clean: filter to human genes only and remove blanks/duplicates
+ecm_genes <- ecm_genes_raw %>%
+  filter(hgnc_symbol != "") %>%
+  distinct(hgnc_symbol, .keep_all = TRUE)
+
+# Extract unique gene symbols
+ecm_gene_list <- unique(ecm_genes$hgnc_symbol)
+
+# Preview
+head(ecm_gene_list)
+length(ecm_gene_list)
+
+```
+## Subset expression data using ECM gene set
+
+```{r}
+# Subset CGGA
+CGGA_ECM_expr <- CGGA_expr_log2[rownames(CGGA_expr_log2) %in% ecm_gene_list, ]
+
+# Subset TCGA
+TCGA_ECM_expr <- TCGA_expr[rownames(TCGA_expr) %in% ecm_gene_list, ]
+
+```
+
+## Heatmap for ECM gene expression
+
+### TCGA ECM analysis
+```{r}
+# Load pheatmap
+library(pheatmap)
+```
+
+```{r}
+# Coerce everything to numeric and keep gene rownames
+TCGA_ECM_expr_clean <- TCGA_ECM_expr %>%
+  mutate_all(as.numeric) %>%
+  as.data.frame()
+
+rownames(TCGA_ECM_expr_clean) <- rownames(TCGA_ECM_expr)
+
+```
+
+```{r}
+# Remove genes (rows) with all NA
+TCGA_ECM_expr_clean <- TCGA_ECM_expr_clean[rowSums(is.na(TCGA_ECM_expr_clean)) < ncol(TCGA_ECM_expr_clean), ]
+
+# Remove samples (columns) with all NA
+TCGA_ECM_expr_clean <- TCGA_ECM_expr_clean[, colSums(is.na(TCGA_ECM_expr_clean)) < nrow(TCGA_ECM_expr_clean)]
+
+# Remove genes with zero variance (flat expression)
+TCGA_ECM_expr_clean <- TCGA_ECM_expr_clean[apply(TCGA_ECM_expr_clean, 1, function(x) var(x, na.rm = TRUE) > 0), ]
+
+```
+
+```{r}
+# Create clean annotation dataframe
+tcga_anno_clean <- data.frame(Histology = tcga_filtered_meta$Histology)
+rownames(tcga_anno_clean) <- tcga_filtered_meta$Sample
+
+# Restrict and order annotations to match expression matrix
+tcga_anno_clean <- tcga_anno_clean[colnames(TCGA_ECM_expr_clean), , drop = FALSE]
+
+```
+
+```{r}
+library(pheatmap)
+
+pheatmap(
+  TCGA_ECM_expr_clean,
+  annotation_col = tcga_anno_clean,
+  scale = "row",
+  show_rownames = FALSE,
+  fontsize_col = 6,
+  clustering_method = "complete",
+  main = "TCGA GBM vs Non-Tumor ECM Gene Expression"
+)
+
+```
+
