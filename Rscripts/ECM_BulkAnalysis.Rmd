@@ -6,17 +6,14 @@ date: "2025-07-31"
 
 #RNAseq ECM Analysis
 
-Lets look at the gene exppression of ECM genes across primary and recurrent GBM in the TCGA and CGGA datasets. 
-
-## Download and upload input data
-
-Data downloaded from https://www.cgga.org.cn/download.jsp and https://gliovis.bioinfo.cnio.es/
+To look at the gene expression of ECM genes across primary and recurrent GBM in CGGA data sets. 
 
 ##Library
 
 ```{r}
 library(tidyr)
 library(dplyr)
+library(httr)
 library(pheatmap)
 library(biomaRt)
 library(limma)
@@ -24,524 +21,568 @@ library(ggplot2)
 library(ggrepel)
 library(tidyverse)
 ```
+## Download and upload input data
+
+Data downloaded from https://www.cgga.org.cn/download.jsp
+
+### Download mRNAseq_693 data
+
+```{r}
+# Download expression data from STAR+RSEM (FPKM Value) 
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_693.RSEM-genes.20200506.txt.zip&type=mRNAseq_693&time=20200506",
+  write_disk(file.path("/Data/Inputs", "CGGA.mRNAseq_693.RSEM-genes.20200506.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_693.RSEM-genes.20200506.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+
+# Download clinical meta data
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_693_clinical.20200506.txt.zip&type=mRNAseq_693_clinical&time=20200506",
+  write_disk(file.path("/Data/Inputs", "CGGA.mRNAseq_693_clinical.20200506.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_693_clinical.20200506.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+
+```
+### Download mRNAseq_325 data
+
+```{r}
+# Download expression data from STAR+RSEM (FPKM Value)
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_325.RSEM-genes.20200506.txt.zip&type=mRNAseq_325&time=20200506",
+  write_disk(file.path("/Data/Inputs", "CGGA.mRNAseq_325.RSEM-genes.20200506.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_325.RSEM-genes.20200506.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+
+# Download clinical meta data
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_325_clinical.20200506.txt.zip&type=mRNAseq_325_clinical&time=20200506",
+  write_disk(file.path("/Data/Inputs", "CGGA.mRNAseq_325_clinical.20200506.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_325_clinical.20200506.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+```
+### Download non-glioma control gene expression
+
+```{r}
+# Download expression data from STAR+RSEM (FPKM Value)
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200614/CGGA_RNAseq_Control_20.txt.zip&type=CGGA_RNAseq_Control_20&time=20200614",
+  write_disk(file.path("/Data/Inputs", "CGGA_RNAseq_Control_20.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA_RNAseq_Control_20.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+
+```
 
 ## Filtering data to only include samples that follow WHO 2021 classification. 
 
-Removed Samples that are not classified as GBM. Removed samples that do not have IDH-Status = Wildtype
+
+Removed Samples that are not classified as GBM.
 
 ```{r}
-# CGGA phenotype
-cgga_meta <- read.delim("/Data/Inputs/2025-07-31_CGGA_pheno.txt", check.names = FALSE, stringsAsFactors = FALSE)
+# Load CGGA-693 metadata
+cgga693_meta <- read.delim("/Data/Inputs/CGGA.mRNAseq_693_clinical.20200506.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
 
-# TCGA phenotype
-tcga_meta <- read.delim("/Data/Inputs/2025-07-31_TCGA_GBM_pheno.txt", check.names = FALSE, stringsAsFactors = FALSE)
+# Load CGGA-325 metadata
+cgga325_meta <- read.delim("/Data/Inputs/CGGA.mRNAseq_325_clinical.20200506.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
 ```
 
-#### CGGA Filtering
 ```{r}
-cgga_filtered_meta <- cgga_meta %>%
-  mutate(
-    Histology = trimws(tolower(Histology)),
-    IDH_status = trimws(tolower(IDH_status)),
-    Recurrence = trimws(tolower(Recurrence)),
-    co_del_1p19q = trimws(tolower(co_del_1p19q))
-  ) %>%
-  filter(
-    Histology == "gbm" &
-    IDH_status == "wildtype" &
-    Recurrence != "secondary" &
-    co_del_1p19q != "codel"
-  )
 
+# Filter CGGA-693: keep GBM/rGBM, remove IDH mutant, remove 1p19q codel
+cgga693_meta_gbm <- cgga693_meta %>%
+  filter(tolower(Histology) %in% c("gbm", "rgbm")) %>%
+  filter(tolower(IDH_mutation_status) != "mutant") %>%
+  filter(tolower(`1p19q_codeletion_status`) != "codel")
+
+# Filter CGGA-325: keep GBM/rGBM, remove IDH mutant, remove 1p19q codel
+cgga325_meta_gbm <- cgga325_meta %>%
+  filter(tolower(Histology) %in% c("gbm", "rgbm")) %>%
+  filter(tolower(IDH_mutation_status) != "mutant") %>%
+  filter(tolower(`1p19q_codeletion_status`) != "codel")
 ```
 
-#### TCGA Filtering
-```{r}
-tcga_filtered_meta <- tcga_meta %>%
-  mutate(
-    Histology = trimws(tolower(Histology)),
-    IDH1_status = trimws(tolower(IDH1_status)),
-    Recurrence = trimws(tolower(Recurrence))
-  ) %>%
-  filter(
-    ((Histology == "gbm" & IDH1_status == "wild-type" & Recurrence != "secondary") |
-     (Histology == "non-tumor"))
-  )
+The meta data shows many columns describing the phenotype of each sample. Within the meta data, irradiation status is listed as 0 or 1. Gene expression profile of ECM genes should be analyzed between recurrent tumors that received irradiation and tumors that did not. This may give insight into irradiation induced ECM change. 
 
-```
-In the TCGA data, the non-tumors are grouped in the Histology column, but i want to add this to the Recurrence column. This will be easier to group the data based on one variable instead of two separate ones.
+## Add filters to gene expression data
 
 ```{r}
-# Update Recurrence column: fill in "non-tumor" for non-tumor samples
-tcga_filtered_meta <- tcga_filtered_meta %>%
-  mutate(
-    Recurrence = ifelse(Histology == "non-tumor", "non-tumor", Recurrence)
-  )
+# Load CGGA-693 gene expression data
+cgga693_expr <- read.delim("/Data/Inputs/CGGA.mRNAseq_693.RSEM-genes.20200506.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
 
+# Load CGGA-325 gene expression data
+cgga325_expr <- read.delim("/Data/Inputs/CGGA.mRNAseq_325.RSEM-genes.20200506.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
 ```
 
-Okay, now all data has been filtered to just include GBM, IDH WT, and non-codel qp19q. I removed Secondary as well recurrence tumors as well. 
+### Filter expression data using filtered meta data
 
-### Match filtered data to expression data. 
+There is a problem using select() function, so the code below specifies to use dplyr 
 
-For CGGA
 ```{r}
-# Load CGGA expression data
-expr_raw <- read.delim("/Data/Inputs/CGGA.mRNAseq_693.RSEM-genes.20200506.txt", row.names = 1, check.names = FALSE)
+# cgga 693 filter
+ids_693 <- intersect(colnames(cgga693_expr)[-1], cgga693_meta_gbm$CGGA_ID)
 
-# Match sample between the metadata and the expression
-matched_samples <- intersect(colnames(expr_raw), cgga_filtered_meta$Sample)
+cgga693_expr_filt <- cgga693_expr %>%
+  dplyr::select(Gene_Name, dplyr::all_of(ids_693))
 
-# Subset data
-CGGA_expr <- expr_raw[, matched_samples]
-cgga_filtered_meta <- cgga_filtered_meta[cgga_filtered_meta$Sample %in% matched_samples, ]
+cgga693_meta_gbm_ord <- cgga693_meta_gbm %>%
+  dplyr::filter(CGGA_ID %in% ids_693) %>%
+  dplyr::slice(match(ids_693, CGGA_ID))
+
+# cgga 325 filter
+ids_325 <- intersect(colnames(cgga325_expr)[-1], cgga325_meta_gbm$CGGA_ID)
+
+cgga325_expr_filt <- cgga325_expr %>%
+  dplyr::select(Gene_Name, dplyr::all_of(ids_325))
+
+cgga325_meta_gbm_ord <- cgga325_meta_gbm %>%
+  dplyr::filter(CGGA_ID %in% ids_325) %>%
+  dplyr::slice(match(ids_325, CGGA_ID))
 ```
 
-For TCGA
+## Load non-glioma control to environment
+
 ```{r}
-# Load TCGA expression data
-tcga_expr_raw <- read.delim("/Data/Inputs/2025-07-31_TCGA_GBM_expression.txt", row.names = 1, check.names = FALSE)
-
-# Transpose because expression data has sample id as row
-tcga_expr_fixed <- as.data.frame(t(tcga_expr_raw))
-
-# Match
-matched_samples <- intersect(colnames(tcga_expr_fixed), tcga_filtered_meta$Sample)
-
-# Subset
-TCGA_expr <- tcga_expr_fixed[, matched_samples]
-tcga_filtered_meta <- tcga_filtered_meta[tcga_filtered_meta$Sample %in% matched_samples, ]
+# Load the control expression data
+control_expr <- read.delim("/Data/Inputs/CGGA_RNAseq_Control_20.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
 ```
 
-### CGGA Data is not Log2 transformed
+
+## Load GO ECM Gene set
 
 ```{r}
-# Apply log2(x + 1) transformation to all values
-CGGA_expr_log2 <- log2(CGGA_expr + 1)
+# ECM genes from GO:0031012 
 
-# Sanity check: look at value range
-summary(as.numeric(unlist(CGGA_expr_log2[, 1:5])))
-```
-
-## GO ECM Gene Set Analysis
-
-Gene set to be used GO:0031012 (Extracellular Matrix)
-
-```{r}
-# Connect to Ensembl BioMart (human dataset)
 ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
 
-# Query human genes annotated with GO:0031012
 ecm_genes_raw <- getBM(
   attributes = c("hgnc_symbol", "ensembl_gene_id", "go_id", "name_1006"),
-  filters = "go",
-  values = "GO:0031012",
-  mart = ensembl
+  filters    = "go",
+  values     = "GO:0031012",  
+  mart       = ensembl
 )
 
-# Clean: filter to human genes only and remove blanks/duplicates
-ecm_genes <- ecm_genes_raw %>%
-  filter(hgnc_symbol != "") %>%
-  distinct(hgnc_symbol, .keep_all = TRUE)
+# Clean to unique, non-empty human symbols
+ecm_genes_tbl <- ecm_genes_raw %>%
+  dplyr::filter(!is.na(hgnc_symbol), nzchar(hgnc_symbol)) %>%
+  dplyr::distinct(hgnc_symbol, .keep_all = FALSE)
 
-# Extract unique gene symbols
-ecm_gene_list <- unique(ecm_genes$hgnc_symbol)
-
-# Preview
-head(ecm_gene_list)
-length(ecm_gene_list)
-
-```
-### Subset expression data using ECM gene set
-
-```{r}
-# Subset CGGA
-CGGA_ECM_expr <- CGGA_expr_log2[rownames(CGGA_expr_log2) %in% ecm_gene_list, ]
-
-# Subset TCGA
-TCGA_ECM_expr <- TCGA_expr[rownames(TCGA_expr) %in% ecm_gene_list, ]
-
+# Final for filtering expression
+ecm_gene_list <- unique(ecm_genes_tbl$hgnc_symbol)
 ```
 
-### Check the recurrent samples
+### Add gene set filter to expression data
+
+#### 693
+
 ```{r}
-recurrent_samples <- c(
-  "TCGA.02.0001", "TCGA.02.0007", "TCGA.02.0021", "TCGA.02.0024",
-  "TCGA.02.0043", "TCGA.02.0057", "TCGA.02.0083", "TCGA.02.0089",
-  "TCGA.02.0099", "TCGA.02.0107", "TCGA.02.0113", "TCGA.02.0116"
+cgga693_expr_ecm <- cgga693_expr_filt %>%
+  filter(toupper(Gene_Name) %in% toupper(ecm_gene_list))
+```
+
+#### 325
+```{r}
+cgga325_expr_ecm <- cgga325_expr_filt %>%
+  filter(toupper(Gene_Name) %in% toupper(ecm_gene_list))
+```
+
+#### Non-glioma control
+
+```{r}
+# Rename gene_name to Gene_Name for consistency
+control_expr <- control_expr %>%
+  rename(Gene_Name = gene_name)
+
+# Filter for ECM genes
+control_expr_ecm <- control_expr %>%
+  filter(toupper(Gene_Name) %in% toupper(ecm_gene_list))
+```
+
+## Combine all three gene expression data sets for analysis
+
+```{r}
+# Check for duplicate genes
+
+cgga693_ecm1 <- cgga693_expr_ecm %>%
+  mutate(Gene_Name = toupper(Gene_Name)) %>%
+  distinct(Gene_Name, .keep_all = TRUE)
+
+cgga325_ecm1 <- cgga325_expr_ecm %>%
+  mutate(Gene_Name = toupper(Gene_Name)) %>%
+  distinct(Gene_Name, .keep_all = TRUE)
+
+control_ecm1 <- control_expr_ecm %>%
+  mutate(Gene_Name = toupper(Gene_Name)) %>%
+  distinct(Gene_Name, .keep_all = TRUE)
+
+# Quick check
+nrow(cgga693_ecm1); nrow(cgga325_ecm1); nrow(control_ecm1)
+sum(duplicated(cgga693_ecm1$Gene_Name))
+sum(duplicated(cgga325_ecm1$Gene_Name))
+sum(duplicated(control_ecm1$Gene_Name))
+
+# Find common ECM genes
+common_genes <- Reduce(intersect, list(
+  cgga693_ecm1$Gene_Name,
+  cgga325_ecm1$Gene_Name,
+  control_ecm1$Gene_Name
+))
+
+length(common_genes)  # number of ECM genes common to all 3
+head(common_genes)    # preview the first few
+
+# Filter common ECM genes and sort
+cgga693_ecm_common <- cgga693_ecm1 %>%
+  filter(Gene_Name %in% common_genes) %>%
+  arrange(Gene_Name)
+
+cgga325_ecm_common <- cgga325_ecm1 %>%
+  filter(Gene_Name %in% common_genes) %>%
+  arrange(Gene_Name)
+
+control_ecm_common <- control_ecm1 %>%
+  filter(Gene_Name %in% common_genes) %>%
+  arrange(Gene_Name)
+
+# Check they all have the same gene order
+identical(cgga693_ecm_common$Gene_Name, cgga325_ecm_common$Gene_Name)
+identical(cgga693_ecm_common$Gene_Name, control_ecm_common$Gene_Name)
+
+```
+```{r}
+# Step 4a: ensure sample-column names are unique across cohorts
+samp_693 <- setdiff(colnames(cgga693_ecm_common), "Gene_Name")
+samp_325 <- setdiff(colnames(cgga325_ecm_common), "Gene_Name")
+samp_ctl <- setdiff(colnames(control_ecm_common), "Gene_Name")
+
+# If any overlaps, append cohort suffixes
+overlap_693_325 <- intersect(samp_693, samp_325)
+overlap_693_ctl  <- intersect(samp_693, samp_ctl)
+overlap_325_ctl  <- intersect(samp_325, samp_ctl)
+
+if (length(overlap_693_325) > 0 || length(overlap_693_ctl) > 0) {
+  colnames(cgga693_ecm_common)[match(samp_693, colnames(cgga693_ecm_common))] <-
+    paste0(samp_693, "_693")
+}
+if (length(overlap_693_325) > 0 || length(overlap_325_ctl) > 0) {
+  colnames(cgga325_ecm_common)[match(samp_325, colnames(cgga325_ecm_common))] <-
+    paste0(samp_325, "_325")
+}
+if (length(overlap_693_ctl) > 0 || length(overlap_325_ctl) > 0) {
+  colnames(control_ecm_common)[match(samp_ctl, colnames(control_ecm_common))] <-
+    paste0(samp_ctl, "_CTRL")
+}
+
+# merge by Gene_Name (inner joins are safe; all have same genes/order)
+merged_expr_ecm <- Reduce(
+  function(x, y) dplyr::inner_join(x, y, by = "Gene_Name"),
+  list(cgga693_ecm_common, cgga325_ecm_common, control_ecm_common)
 )
 
-common_ecm_genes <- c("COL1A1", "FN1", "SPARC", "MMP2", "TNC")
+# Step 4c: sanity checks
+stopifnot(!anyDuplicated(merged_expr_ecm$Gene_Name))
+stopifnot(length(setdiff(common_genes, merged_expr_ecm$Gene_Name)) == 0)
+sum(duplicated(colnames(merged_expr_ecm)))  # should be 0
 
-TCGA_ECM_expr[common_ecm_genes, recurrent_samples]
-```
-For some reason the recurrent samples have no expression data for ECM genes. For this reason I will omit using this dataset for my current analysis. The CGGA datase has both recurrent and primary data, both of which includes expression data for my sought after gene set.
-
-### CGGA ECM Gene set analysis
-
-Annotate the data
-```{r}
-cgga_anno <- data.frame(
-  Recurrence = cgga_filtered_meta$Recurrence
-)
-rownames(cgga_anno) <- cgga_filtered_meta$Sample
-
-# Reorder to match expression matrix
-cgga_anno <- cgga_anno[colnames(CGGA_ECM_expr), , drop = FALSE]
-```
-
-```{r}
-# Reorder sample names by recurrence status
-ordered_samples <- rownames(cgga_anno)[order(cgga_anno$Recurrence)]
+dim(merged_expr_ecm)
+head(merged_expr_ecm[, 1:6])
 
 ```
-
 ```{r}
-# Reorder columns (samples) in expression matrix
-CGGA_ECM_expr_ordered <- CGGA_ECM_expr[, ordered_samples]
+# make sample-level metadata that matches merged column names
 
-# Reorder annotation to match
-cgga_anno_ordered <- cgga_anno[ordered_samples, , drop = FALSE]
+# Current sample IDs in the merged matrix
+merged_samples <- colnames(merged_expr_ecm)[-1]
 
-```
+# 693 meta -> keep IDs present in merged columns; label group from Histology
+meta693 <- cgga693_meta_gbm_ord %>%
+  transmute(
+    sample_id = CGGA_ID,
+    group = ifelse(tolower(Histology) == "rgbm", "rGBM", "GBM"),
+    cohort = "CGGA693"
+  )
 
-#### Make Heatmap
+# 325 meta
+meta325 <- cgga325_meta_gbm_ord %>%
+  transmute(
+    sample_id = CGGA_ID,
+    group = ifelse(tolower(Histology) == "rgbm", "rGBM", "GBM"),
+    cohort = "CGGA325"
+  )
 
-```{r}
-anno_colors <- list(
-  Recurrence = c("primary" = "#00A087", "recurrent" = "#3C5488")
-)
-
-```
-
-```{r}
-CGGA_heatmap <- pheatmap(
-  CGGA_ECM_expr_ordered,
-  annotation_col = cgga_anno_ordered,
-  annotation_colors = anno_colors,
-  scale = "row",
-  show_rownames = FALSE,
-  fontsize_col = 6,
-  cluster_cols = FALSE,  # Don't recluster columns, keep your Recurrence order
-  clustering_method = "complete",
-  main = "CGGA ECM Gene Expression (Primary vs Recurrent)"
+# Control meta: build from control expression column names that made it into 'merged'
+# (after you possibly renamed columns with _CTRL)
+ctl_ids <- setdiff(colnames(control_ecm_common), "Gene_Name")
+metaCTL <- tibble(
+  sample_id = ctl_ids,
+  group = "Control",
+  cohort = "Control"
 )
 
-print(CGGA_heatmap)
-```
-```{r}
-ggsave("/Data/Outputs/CGGA_ECM_heatmap.pdf", CGGA_heatmap, width = 8, height = 6)
-```
+# If we added suffixes earlier (_693, _325, _CTRL), mirror them here
+add_suffix_if_needed <- function(df, suffix) {
+  needs_suffix <- any(grepl(paste0(suffix, "$"), merged_samples))
+  if (needs_suffix) df$sample_id <- paste0(df$sample_id, suffix)
+  df
+}
 
-#### Volcano Plot
+meta693 <- add_suffix_if_needed(meta693, "_693")
+meta325 <- add_suffix_if_needed(meta325, "_325")
+# Control already derived from the post-filter table (which may already include _CTRL), so no change
 
-```{r}
-# Make sure sample names are consistent
-colnames(CGGA_ECM_expr) <- gsub("-", ".", colnames(CGGA_ECM_expr))
-cgga_filtered_meta$Sample <- gsub("-", ".", cgga_filtered_meta$Sample)
+# Combine all sample metadata and keep only those that exist in merged
+sample_meta_all <- bind_rows(meta693, meta325, metaCTL) %>%
+  filter(sample_id %in% merged_samples) %>%
+  distinct(sample_id, .keep_all = TRUE)
 
-# Filter metadata to match expression matrix
-cgga_meta_matched <- cgga_filtered_meta[cgga_filtered_meta$Sample %in% colnames(CGGA_ECM_expr), ]
-CGGA_ECM_expr <- CGGA_ECM_expr[, cgga_meta_matched$Sample]
-
-```
-
-```{r}
-# Create design matrix: Primary = reference
-group <- factor(cgga_meta_matched$Recurrence, levels = c("primary", "recurrent"))
-design <- model.matrix(~ group)
-
-# Run limma
-fit <- lmFit(CGGA_ECM_expr, design)
-fit <- eBayes(fit)
-
-# Extract results for the contrast recurrent vs primary
-res <- topTable(fit, coef = 2, number = Inf, sort.by = "P")
-```
-
-```{r}
-res$gene <- rownames(res)
-res$log10FDR <- -log10(res$adj.P.Val)
-
-# Add significance threshold
-res$threshold <- with(res, ifelse(adj.P.Val < 0.05 & abs(logFC) > 1, "Significant", "Not Significant"))
-
-# Label only significant genes
-res$label <- ifelse(res$adj.P.Val < 0.05 & abs(res$logFC) > 1, res$gene, NA)
-
-```
-
-```{r}
-CGGA_volcano_sig <- ggplot(res, aes(x = logFC, y = log10FDR)) +
-  geom_point(aes(color = threshold)) +
-  scale_color_manual(values = c("Significant" = "#D55E00", "Not Significant" = "grey")) +
-  geom_text_repel(aes(label = label), size = 3, max.overlaps = 20) +
-  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
-  labs(
-    title = "Volcano Plot: ECM Genes (Recurrent vs Primary, CGGA)",
-    x = "Log2 Fold Change (Recurrent vs Primary)",
-    y = "-Log10 Adjusted P-value"
-  ) +
-  theme_minimal()
-
-print(CGGA_volcano_sig)
-```
-
-```{r}
-ggsave("/Data/Outputs/CGGA_ECM_volcano_sig.pdf", CGGA_volcano_sig, width = 8, height = 6)
-```
-
-#### Top 10 DEG
-
-```{r}
-# Top 10 up in recurrent
-# Loosen threshold for recurrent if needed
-top10_recurrent <- res %>%
-  filter(logFC > 0) %>%
-  arrange(desc(logFC)) %>%
-  head(10)
-
-# Top 10 up in primary
-top10_primary <- res %>%
-  filter(adj.P.Val < 0.05 & logFC < 0) %>%
-  arrange(logFC) %>%
-  head(10)
-
-# Combine gene names
-top20_label_genes <- c(top10_primary$gene, top10_recurrent$gene)
-```
-
-```{r}
-res$label <- ifelse(res$gene %in% top20_label_genes, res$gene, NA)
-```
-
-Volcano with top DEG
-```{r}
-CGGA_volcano_top10 <- ggplot(res, aes(x = logFC, y = log10FDR)) +
-  geom_point(aes(color = threshold)) +
-  scale_color_manual(values = c("Significant" = "#D55E00", "Not Significant" = "grey")) +
-  geom_text_repel(aes(label = label), size = 3.5, max.overlaps = 100) +
-  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
-  labs(
-    title = "Volcano Plot: Top 10 ECM Genes Up in Primary and Recurrent (CGGA)",
-    x = "Log2 Fold Change (Recurrent vs Primary)",
-    y = "-Log10 Adjusted P-value"
-  ) +
-  theme_minimal()
-
-print(CGGA_volcano_top10)
-```
-
-```{r}
-ggsave("/Data/Outputs/CGGA_volcano_top10.pdf", CGGA_volcano_top10, width = 8, height = 6)
-```
-
-##### Box Plots of Top 10 DEG in recurrent GBM
-```{r}
-top10_recurrent <- res %>%
-  filter(logFC > 0) %>%
-  arrange(desc(logFC)) %>%
-  head(10)
-
-top10_recurrent_genes <- top10_recurrent$gene
-
-```
-
-```{r}
-# Subset expression matrix
-box_expr <- CGGA_ECM_expr[top10_recurrent_genes, ]
-
-box_df <- box_expr %>%
-  as.data.frame() %>%
-  rownames_to_column("Gene") %>%
-  pivot_longer(-Gene, names_to = "Sample", values_to = "Expression")
-
-# Add recurrence annotation
-box_df <- box_df %>%
-  left_join(cgga_filtered_meta[, c("Sample", "Recurrence")], by = "Sample")
-
-```
-
-```{r}
-# Boxplots facet by gene
-ggplot(box_df, aes(x = Recurrence, y = Expression, fill = Recurrence)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
-  geom_jitter(width = 0.2, size = 0.8, alpha = 0.5) +
-  facet_wrap(~ Gene, scales = "free_y", ncol = 5) +
-  scale_fill_manual(values = c("primary" = "#00A087", "recurrent" = "#3C5488")) +
-  labs(
-    title = "Top 10 ECM Genes Upregulated in Recurrent Tumors (CGGA)",
-    x = "Tumor Recurrence Status",
-    y = "Log2 Expression"
-  ) +
-  theme_minimal() +
-  theme(strip.text = element_text(size = 10))
-
-```
-
-P values
-```{r}
-# For each gene, compare expression between primary and recurrent using Wilcoxon test
-pvals <- box_df %>%
-  group_by(Gene) %>%
-  summarise(
-    p_value = wilcox.test(Expression ~ Recurrence)$p.value
+# 693 extra metadata
+meta693_extra <- cgga693_meta_gbm %>%
+  dplyr::select(
+    CGGA_ID,
+    `Radio_status (treated=1;un-treated=0)`,
+    `Chemo_status (TMZ treated=1;un-treated=0)`
   ) %>%
+  dplyr::rename(
+    sample_id = CGGA_ID,
+    Radio_status = `Radio_status (treated=1;un-treated=0)`,
+    Chemo_status = `Chemo_status (TMZ treated=1;un-treated=0)`
+  )
+
+# 325 extra metadata
+meta325_extra <- cgga325_meta_gbm %>%
+  dplyr::select(
+    CGGA_ID,
+    `Radio_status (treated=1;un-treated=0)`,
+    `Chemo_status (TMZ treated=1;un-treated=0)`
+  ) %>%
+  dplyr::rename(
+    sample_id = CGGA_ID,
+    Radio_status = `Radio_status (treated=1;un-treated=0)`,
+    Chemo_status = `Chemo_status (TMZ treated=1;un-treated=0)`
+  )
+
+# Control extra metadata
+metaCTL_extra <- tibble::tibble(
+  sample_id = setdiff(colnames(control_ecm_common), "Gene_Name"),
+  Radio_status = NA_integer_,
+  Chemo_status = NA_integer_
+)
+
+# Apply suffixes
+meta693_extra <- add_suffix_if_needed(meta693_extra, "_693")
+meta325_extra <- add_suffix_if_needed(meta325_extra, "_325")
+metaCTL_extra <- add_suffix_if_needed(metaCTL_extra, "_CTRL")
+
+# Combine and join into sample_meta_all
+meta_extra_all <- dplyr::bind_rows(meta693_extra, meta325_extra, metaCTL_extra)
+
+sample_meta_all <- sample_meta_all %>%
+  dplyr::left_join(meta_extra_all, by = "sample_id")
+
+# Check result
+head(sample_meta_all)
+
+# Sanity check
+stopifnot(setequal(sample_meta_all$sample_id, merged_samples))
+
+# pivot merged expression to long and join sample meta
+merged_expr_ecm_long <- merged_expr_ecm %>%
+  tidyr::pivot_longer(-Gene_Name, names_to = "sample_id", values_to = "expression") %>%
+  left_join(sample_meta_all, by = "sample_id")
+
+# Optional cleanups
+merged_expr_ecm_long <- merged_expr_ecm_long %>%
   mutate(
-    p_label = ifelse(p_value < 0.001, "***",
-              ifelse(p_value < 0.01, "**",
-              ifelse(p_value < 0.05, "*", "ns")))
+    group = factor(group, levels = c("Control", "GBM", "rGBM")),
+    cohort = factor(cohort, levels = c("Control", "CGGA693", "CGGA325"))
+  )
+
+# Quick peek
+dim(merged_expr_ecm_long)
+head(merged_expr_ecm_long)
+table(merged_expr_ecm_long$group, useNA = "ifany")
+
+```
+## Normalization, QC, and batch effect correction
+
+### Normalize and clean up new table
+```{r}
+merged_expr_ecm_long <- merged_expr_ecm_long %>%
+  dplyr::mutate(
+    log2_expr = log2(as.numeric(expression) + 1),
+    Radio_status_lbl = dplyr::case_when(
+      Radio_status == 1 ~ "Treated",
+      Radio_status == 0 ~ "Untreated",
+      TRUE ~ NA_character_
+    ),
+    Chemo_status_lbl = dplyr::case_when(
+      Chemo_status == 1 ~ "Treated (TMZ)",
+      Chemo_status == 0 ~ "Untreated",
+      TRUE ~ NA_character_
+    ),
+    group = factor(group, levels = c("Control", "GBM", "rGBM")),
+    cohort = factor(cohort, levels = c("Control", "CGGA693", "CGGA325"))
   )
 
 ```
 
+### QC to find outliers and scale differnces in data
 ```{r}
-box_df <- left_join(box_df, pvals, by = "Gene")
 
-```
-
-```{r}
-CGGA_ECM_top10_box <- ggplot(box_df, aes(x = Recurrence, y = Expression, fill = Recurrence)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
-  geom_jitter(width = 0.2, size = 0.8, alpha = 0.5) +
-  facet_wrap(~ Gene, scales = "free_y", ncol = 5) +
-  stat_summary(
-    fun = max, geom = "text",
-    aes(label = p_label),
-    vjust = -0.5, size = 4, color = "black"
-  ) +
-  scale_fill_manual(values = c("primary" = "#00A087", "recurrent" = "#3C5488")) +
-  labs(
-    title = "Top 10 ECM Genes Upregulated in Recurrent Tumors (CGGA)",
-    x = "Tumor Recurrence Status",
-    y = "Log2 Expression"
-  ) +
-  theme_minimal() +
-  theme(strip.text = element_text(size = 10))
-
-print(CGGA_ECM_top10_box)
-```
-
-```{r}
-ggsave("/Data/Outputs/CGGA_ECM_top10_box.pdf", CGGA_ECM_top10_box, width = 8, height = 6)
-```
-
-####Top 20 DEG
-
-```{r}
-top20_recurrent <- res %>%
-  filter(logFC > 0) %>%
-  arrange(desc(logFC)) %>%
-  head(20)
-
-top20_recurrent_genes <- top20_recurrent$gene
-
-```
-
-```{r}
-# Subset expression matrix to just these genes
-top20_expr <- CGGA_ECM_expr[top20_recurrent_genes, ]
-
-# Convert to long format
-library(tidyverse)
-
-box_df <- top20_expr %>%
-  as.data.frame() %>%
-  rownames_to_column("Gene") %>%
-  pivot_longer(-Gene, names_to = "Sample", values_to = "Expression") %>%
-  left_join(cgga_filtered_meta[, c("Sample", "Recurrence")], by = "Sample")
-
-```
-
-```{r}
-# Wilcoxon test for each gene
-pvals <- box_df %>%
-  group_by(Gene) %>%
-  summarise(
-    p_value = wilcox.test(Expression ~ Recurrence)$p.value
-  ) %>%
-  mutate(
-    p_label = ifelse(p_value < 0.001, "***",
-              ifelse(p_value < 0.01, "**",
-              ifelse(p_value < 0.05, "*", "ns")))
+ggplot(merged_expr_ecm_long, aes(x = sample_id, y = log2_expr, fill = group)) +
+  geom_boxplot(outlier.size = 0.5, width = 0.6) +
+  facet_grid(~ cohort, scales = "free_x", space = "free_x") +
+  labs(title = "ECM genes: per-sample log2(FPKM+1) distributions",
+       x = "Sample", y = "log2 expression") +
+  theme_bw(base_size = 11) +
+  theme(
+    axis.text.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
   )
 
-# Merge with box_df
-box_df <- left_join(box_df, pvals, by = "Gene")
-
 ```
+### Batch effect correction
 
 ```{r}
-CGGA_ECM_top20_box <- ggplot(box_df, aes(x = Recurrence, y = Expression, fill = Recurrence)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
-  geom_jitter(width = 0.2, size = 0.8, alpha = 0.5) +
-  facet_wrap(~ Gene, scales = "free_y", ncol = 5) +
-  stat_summary(
-    fun = max, geom = "text",
-    aes(label = p_label),
-    vjust = -0.5, size = 4, color = "black"
-  ) +
-  scale_fill_manual(values = c("primary" = "#00A087", "recurrent" = "#3C5488")) +
-  labs(
-    title = "Top 20 ECM Genes Upregulated in Recurrent GBM (CGGA)",
-    x = "Tumor Recurrence Status",
-    y = "Log2 Expression"
-  ) +
-  theme_minimal() +
-  theme(strip.text = element_text(size = 10))
+# Wide matrix: genes x samples
+expr_mat <- merged_expr_ecm %>%
+  tibble::column_to_rownames("Gene_Name") %>%
+  as.matrix()
 
-print(CGGA_ECM_top20_box)
+# Align metadata to columns
+sample_meta_all <- sample_meta_all %>%
+  dplyr::slice(match(colnames(expr_mat), sample_id))
+stopifnot(identical(sample_meta_all$sample_id, colnames(expr_mat)))
+
+# Log2 transform
+expr_log2 <- log2(expr_mat + 1)
+
+# ---- Tumor-only batch correction ----
+idx_tumor   <- which(sample_meta_all$group != "Control")
+idx_control <- which(sample_meta_all$group == "Control")
+
+expr_tumor   <- expr_log2[, idx_tumor, drop = FALSE]
+expr_control <- expr_log2[, idx_control, drop = FALSE]
+
+tumor_meta <- sample_meta_all[idx_tumor, , drop = FALSE] %>%
+  dplyr::mutate(group = factor(group, levels = c("GBM","rGBM")))
+
+batch_tumor  <- factor(tumor_meta$cohort)               # <-- key fix
+design_tumor <- model.matrix(~ group, data = tumor_meta)
+
+expr_tumor_adj <- removeBatchEffect(expr_tumor, batch = batch_tumor, design = design_tumor)
+
+# Recombine (preserve original sample order)
+expr_adj_tumoronly <- expr_log2
+expr_adj_tumoronly[, idx_tumor]   <- expr_tumor_adj
+expr_adj_tumoronly[, idx_control] <- expr_control
+
+# Long format
+expr_adj_tumoronly_long <- expr_adj_tumoronly %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene_Name") %>%
+  tidyr::pivot_longer(-Gene_Name, names_to = "sample_id", values_to = "log2_expr_batch_adj") %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id")
+
+# Quick checks
+dim(expr_adj_tumoronly_long)
+head(expr_adj_tumoronly_long)
+
 ```
-
-```{r}
-ggsave("/Data/Outputs/CGGA_ECM_top20_box.pdf", CGGA_ECM_top20_box, width = 8, height = 6)
-```
-#### COL3A1
-
-```{r}
-# Add COL3A1 to label if it's in the result table
-res$label <- ifelse(res$gene == "COL3A1", "COL3A1", NA)
-
-```
-
-```{r}
-res$label <- ifelse(res$gene %in% c(top10_primary$gene, top10_recurrent$gene, "COL3A1"), res$gene, NA)
-
-```
+### Check batch correction with PCA
 
 ```{r}
 library(ggplot2)
-library(ggrepel)
+library(dplyr)
+library(tidyr)
+library(tibble)
 
-ggplot(res, aes(x = logFC, y = log10FDR)) +
-  geom_point(aes(color = threshold)) +
-  scale_color_manual(values = c("Significant" = "#D55E00", "Not Significant" = "grey")) +
-  geom_text_repel(aes(label = label), size = 3.5, max.overlaps = 100) +
-  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
-  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+# (Optional) drop zero-variance genes to avoid warnings
+keep_genes <- apply(expr_log2, 1, var) > 0
+X_before <- t(expr_log2[keep_genes, , drop = FALSE])       # samples x genes
+X_after  <- t(expr_adj_tumoronly[keep_genes, , drop = FALSE])
+
+# PCA
+pca_before <- prcomp(X_before, center = TRUE, scale. = TRUE)
+pca_after  <- prcomp(X_after,  center = TRUE, scale. = TRUE)
+
+# % variance
+ve_b <- (pca_before$sdev^2) / sum(pca_before$sdev^2)
+ve_a <- (pca_after$sdev^2)  / sum(pca_after$sdev^2)
+
+# Data frames for plotting
+df_b <- as.data.frame(pca_before$x[, 1:2]) %>%
+  rownames_to_column("sample_id") %>%
+  left_join(sample_meta_all, by = "sample_id") %>%
+  mutate(state = "Before (log2 FPKM)")
+
+df_a <- as.data.frame(pca_after$x[, 1:2]) %>%
+  rownames_to_column("sample_id") %>%
+  left_join(sample_meta_all, by = "sample_id") %>%
+  mutate(state = "After (tumor-only adj)")
+
+pca_df <- bind_rows(df_b, df_a)
+
+# Limited color palette (your preference)
+group_cols <- c(Control = "grey40", GBM = "#1f77b4", rGBM = "#d62728")
+
+# Plot BEFORE
+ggplot(df_b, aes(PC1, PC2, color = group, shape = cohort)) +
+  geom_point(size = 2, alpha = 0.9) +
+  scale_color_manual(values = group_cols) +
   labs(
-    title = "Volcano Plot: Highlighting COL3A1 and Top DEGs (CGGA)",
-    x = "Log2 Fold Change (Recurrent vs Primary)",
-    y = "-Log10 Adjusted P-value"
+    title = "PCA BEFORE batch correction",
+    x = paste0("PC1 (", round(100*ve_b[1], 1), "%)"),
+    y = paste0("PC2 (", round(100*ve_b[2], 1), "%)")
   ) +
-  theme_minimal()
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(), legend.position = "top")
 
-```
-#### Print top recurrent genes list
-
-```{r}
-# Get top 20 ECM genes with highest log2 fold change in recurrent
-top20_recurrent <- res %>%
-  filter(logFC > 0) %>%
-  arrange(desc(logFC)) %>%
-  head(20)
-
-top20_recurrent %>%
-  dplyr::select(gene, logFC, adj.P.Val) %>%
-  tibble::as_tibble() %>%
-  print(n = 20)
+# Plot AFTER
+ggplot(df_a, aes(PC1, PC2, color = group, shape = cohort)) +
+  geom_point(size = 2, alpha = 0.9) +
+  scale_color_manual(values = group_cols) +
+  labs(
+    title = "PCA AFTER tumor-only batch correction",
+    x = paste0("PC1 (", round(100*ve_a[1], 1), "%)"),
+    y = paste0("PC2 (", round(100*ve_a[2], 1), "%)")
+  ) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(), legend.position = "top")
 
 ```
 
