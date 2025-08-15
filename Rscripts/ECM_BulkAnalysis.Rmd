@@ -20,14 +20,17 @@ library(limma)
 library(ggplot2)
 library(ggrepel)
 library(tidyverse)
+library(tibble)
 ```
 ## Download and upload input data
 
 Data downloaded from https://www.cgga.org.cn/download.jsp
 
+Data that are already downloaded are not downloaded again. Chunks are skipped using , eval = FALSE in chunk. 
+
 ### Download mRNAseq_693 data
 
-```{r}
+```{r, eval = FALSE}
 # Download expression data from STAR+RSEM (FPKM Value) 
 GET(
   "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_693.RSEM-genes.20200506.txt.zip&type=mRNAseq_693&time=20200506",
@@ -53,7 +56,7 @@ unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
 ```
 ### Download mRNAseq_325 data
 
-```{r}
+```{r, eval = FALSE}
 # Download expression data from STAR+RSEM (FPKM Value)
 GET(
   "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_325.RSEM-genes.20200506.txt.zip&type=mRNAseq_325&time=20200506",
@@ -78,7 +81,7 @@ unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
 ```
 ### Download non-glioma control gene expression
 
-```{r}
+```{r, eval = FALSE}
 # Download expression data from STAR+RSEM (FPKM Value)
 GET(
   "https://www.cgga.org.cn/download?file=download/20200614/CGGA_RNAseq_Control_20.txt.zip&type=CGGA_RNAseq_Control_20&time=20200614",
@@ -585,4 +588,294 @@ ggplot(df_a, aes(PC1, PC2, color = group, shape = cohort)) +
   theme(panel.grid.minor = element_blank(), legend.position = "top")
 
 ```
+## DEG analysis
+
+### Compare DEG between control, GBM, and rGBM.
+
+####Prepare meta data
+
+```{r}
+# Make sure sample metadata matches the columns in expr_adj_tumoronly
+sample_meta <- expr_adj_tumoronly_long %>%
+  distinct(sample_id, group) %>%
+  slice(match(colnames(expr_adj_tumoronly), sample_id))
+
+# Set factor order
+sample_meta$group <- factor(sample_meta$group, levels = c("Control", "GBM", "rGBM"))
+
+```
+
+Build design matrix and contrasts
+```{r}
+
+design <- model.matrix(~ 0 + group, data = sample_meta)
+colnames(design) <- levels(sample_meta$group)
+
+contrast_matrix <- makeContrasts(
+  GBM_vs_Control  = GBM - Control,
+  rGBM_vs_Control = rGBM - Control,
+  rGBM_vs_GBM     = rGBM - GBM,
+  levels = design
+)
+
+```
+
+Run Limma
+```{r}
+fit <- lmFit(expr_adj_tumoronly, design)
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+deg_GBM_vs_Control  <- topTable(fit2, coef = "GBM_vs_Control", number = Inf, adjust.method = "BH")
+deg_rGBM_vs_Control <- topTable(fit2, coef = "rGBM_vs_Control", number = Inf, adjust.method = "BH")
+deg_rGBM_vs_GBM     <- topTable(fit2, coef = "rGBM_vs_GBM", number = Inf, adjust.method = "BH")
+
+```
+
+Save the .csv
+
+```{r}
+write.csv(deg_GBM_vs_Control,
+          "/Data/Outputs/DEG_GBM_vs_Control.csv",
+          row.names = TRUE)
+
+write.csv(deg_rGBM_vs_Control,
+          "/Data/Outputs/DEG_rGBM_vs_Control.csv",
+          row.names = TRUE)
+
+write.csv(deg_rGBM_vs_GBM,
+          "/Data/Outputs/DEG_rGBM_vs_GBM.csv",
+          row.names = TRUE)
+
+```
+
+#### Plot Volcano 
+
+```{r}
+make_volcano <- function(deg,
+                         title = "Volcano",
+                         padj_col = "adj.P.Val",
+                         lfc_col  = "logFC",
+                         padj_cut = 0.05,
+                         lfc_cut  = 1,
+                         label_n_each = 0,     # set >0 to show labels
+                         label_by = c("absLFC","padj")) {
+
+  label_by <- match.arg(label_by)
+  stopifnot(!is.null(rownames(deg)))
+  df <- deg %>%
+    mutate(gene = rownames(deg),
+           padj = .data[[padj_col]],
+           lfc  = .data[[lfc_col]]) %>%
+    filter(is.finite(padj), is.finite(lfc)) %>%
+    mutate(neglog10 = -log10(padj),
+           status = case_when(
+             padj < padj_cut & lfc >=  lfc_cut  ~ "Up",
+             padj < padj_cut & lfc <= -lfc_cut  ~ "Down",
+             TRUE                                ~ "NS"
+           ))
+
+  # choose labels (optional)
+  pick <- function(d) {
+    if (label_by == "absLFC") d %>% arrange(desc(abs(lfc))) else d %>% arrange(padj)
+  }
+  lab_up   <- df %>% filter(status=="Up")   %>% pick() %>% slice_head(n = label_n_each)
+  lab_down <- df %>% filter(status=="Down") %>% pick() %>% slice_head(n = label_n_each)
+  labs <- unique(c(lab_up$gene, lab_down$gene))
+
+  ggplot(df, aes(x = lfc, y = neglog10)) +
+    geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
+    scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
+    geom_hline(yintercept = -log10(padj_cut), linetype = 2, linewidth = 0.3) +
+    geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
+    geom_text_repel(data = subset(df, gene %in% labs),
+                    aes(label = gene),
+                    max.overlaps = Inf,
+                    box.padding = 0.35,
+                    point.padding = 0.2,
+                    min.segment.length = 0,
+                    seed = 123) +
+    labs(title = title,
+         x = expression(log[2]~fold~change),
+         y = expression(-log[10]~adjusted~italic(p))) +
+    theme_minimal(base_size = 11) +
+    theme(legend.position = "none",
+          plot.title = element_text(face = "bold"))
+}
+
+# Build the three plots 
+p1 <- make_volcano(deg_GBM_vs_Control,  title = "GBM vs Control",  label_n_each = 10)
+p2 <- make_volcano(deg_rGBM_vs_Control, title = "rGBM vs Control", label_n_each = 10)
+p3 <- make_volcano(deg_rGBM_vs_GBM,     title = "rGBM vs GBM",     label_n_each = 10)
+
+# Print them one by one
+p1; p2; p3
+
+```
+```{r}
+# rGBM vs GBM plot is not giving enough information
+
+p3_adj <- make_volcano(
+  deg_rGBM_vs_GBM,
+  title = "rGBM vs GBM",
+  lfc_cut = 0.25,    # new fold change cutoff!!!!
+  label_n_each = 10
+)
+
+p3_adj
+```
+#### Sample counts
+```{r}
+## ---- Sample counts for original group volcanoes ----
+
+# Overall counts (sanity check)
+cat("\n=== Overall samples by group ===\n")
+print(table(sample_meta_all$group, useNA = "ifany"))
+
+# Helper: print counts for a 2‑group comparison
+print_pair_counts <- function(g1, g2, label = NULL) {
+  keep <- sample_meta_all$group %in% c(g1, g2)
+  sub  <- droplevels(sample_meta_all[keep, , drop = FALSE])
+  ttl  <- if (is.null(label)) paste(g1, "vs", g2) else label
+  cat("\n---", ttl, "---\n")
+  print(table(sub$group, useNA = "ifany"))
+}
+
+# Matches your three volcano comparisons:
+print_pair_counts("GBM",  "Control", label = "GBM vs Control")
+print_pair_counts("rGBM", "Control", label = "rGBM vs Control")
+print_pair_counts("rGBM", "GBM",     label = "rGBM vs GBM")
+
+```
+
+Save volcano plots as PDF
+```{r}
+
+# Save PDFs
+ggsave("/Data/Outputs/Volcano_GBM_vs_Control.pdf",  plot = p1, width = 6, height = 5, units = "in", device = cairo_pdf)
+ggsave("/Data/Outputs/Volcano_rGBM_vs_Control.pdf", plot = p2, width = 6, height = 5, units = "in", device = cairo_pdf)
+ggsave("/Data/Outputs/Volcano_rGBM_vs_GBM.pdf",     plot = p3, width = 6, height = 5, units = "in", device = cairo_pdf)
+ggsave("/Data/Outputs/Volcano_rGBM_vs_GBM_adjfc.pdf",     plot = p3_adj, width = 6, height = 5, units = "in", device = cairo_pdf)
+```
+
+
+### Compare DEG using Chemo and Radio status
+
+```{r}
+run_simple_deg <- function(group_filter, status_col, status_labels,
+                           csv_path, volcano_title, pdf_path,
+                           lfc_cut = 0.25, label_n_each = 10) {
+  
+  # subset
+  idx <- which(sample_meta_all$group == group_filter & 
+               !is.na(sample_meta_all[[status_col]]))
+  Y   <- expr_adj_tumoronly[, idx, drop = FALSE]
+  sm  <- sample_meta_all[idx, , drop = FALSE]
+  
+  # factor for treatment
+  sm[[status_col]] <- factor(sm[[status_col]], 
+                             levels = c(0,1), 
+                             labels = status_labels)
+  
+  # design + contrast
+  design <- model.matrix(~ 0 + sm[[status_col]])
+  colnames(design) <- status_labels
+  
+  # get actual column names from design
+  col1 <- colnames(design)[1]
+  col2 <- colnames(design)[2]
+  contrast <- makeContrasts(contrasts = paste0(col2, " - ", col1),
+                            levels = design)
+  
+  # limma
+  fit  <- lmFit(Y, design)
+  fit2 <- eBayes(contrasts.fit(fit, contrast))
+  deg  <- topTable(fit2, coef = 1, number = Inf, adjust.method = "BH")
+  
+  # save CSV
+  write.csv(deg, csv_path, row.names = TRUE)
+  message("Wrote: ", csv_path)
+  
+  # volcano
+  p <- make_volcano(deg, title = volcano_title, lfc_cut = lfc_cut, label_n_each = label_n_each)
+  ggsave(pdf_path, plot = p, width = 6, height = 5, units = "in")
+  message("Saved: ", pdf_path)
+  return(p)
+}
+
+```
+
+
+```{r}
+p_gbm_chemo <- run_simple_deg("GBM", "Chemo_status", c("NoChemo", "Chemo"),
+                              "/Data/Outputs/DEG_GBM_Chemo_vs_NoChemo.csv",
+                              "GBM: Chemo vs No-Chemo",
+                              "/Data/Outputs/Volcano_GBM_Chemo_vs_NoChemo.pdf")
+
+p_gbm_radio <- run_simple_deg("GBM", "Radio_status", c("NoRadio", "Radio"),
+                              "/Data/Outputs/DEG_GBM_Radio_vs_NoRadio.csv",
+                              "GBM: Radio vs No-Radio",
+                              "/Data/Outputs/Volcano_GBM_Radio_vs_NoRadio.pdf")
+
+p_rgbm_chemo <- run_simple_deg("rGBM", "Chemo_status", c("NoChemo", "Chemo"),
+                               "/Data/Outputs/DEG_rGBM_Chemo_vs_NoChemo.csv",
+                               "rGBM: Chemo vs No-Chemo",
+                               "/Data/Outputs/Volcano_rGBM_Chemo_vs_NoChemo.pdf")
+
+p_rgbm_radio <- run_simple_deg("rGBM", "Radio_status", c("NoRadio", "Radio"),
+                               "/Data/Outputs/DEG_rGBM_Radio_vs_NoRadio.csv",
+                               "rGBM: Radio vs No-Radio",
+                               "/Data/Outputs/Volcano_rGBM_Radio_vs_NoRadio.pdf")
+
+```
+
+```{r}
+# Load the existing DEG table from CSV
+deg_rgbm_radio <- read.csv("/Data/Outputs/DEG_rGBM_Radio_vs_NoRadio.csv",
+                           row.names = 1, check.names = FALSE)
+
+# Make a volcano with new thresholds
+p_rgbm_radio_loose <- make_volcano(
+  deg_rgbm_radio,
+  title     = "rGBM: Radio vs No-Radio (looser cutoff)",
+  padj_cut  = 0.2,   # less strict p-value cutoff
+  lfc_cut   = 0.25,   # less strict fold change cutoff
+  label_n_each = 10
+)
+
+# Print and save
+print(p_rgbm_radio_loose)
+ggsave("/Data/Outputs/Volcano_rGBM_Radio_vs_NoRadio_adj.pdf",
+       plot = p_rgbm_radio_loose, width = 6, height = 5, units = "in")
+
+```
+
+
+```{r}
+p_gbm_chemo
+p_gbm_radio
+p_rgbm_chemo
+p_rgbm_radio
+```
+```{r}
+## ---- Print sample counts for each comparison ----
+
+print_sample_counts <- function(group_filter, status_col, status_labels) {
+  idx <- which(sample_meta_all$group == group_filter & 
+               !is.na(sample_meta_all[[status_col]]))
+  sm  <- sample_meta_all[idx, , drop = FALSE]
+  sm[[status_col]] <- factor(sm[[status_col]], 
+                             levels = c(0,1), 
+                             labels = status_labels)
+  cat("\n---", group_filter, ":", status_labels[2], "vs", status_labels[1], "---\n")
+  print(table(sm[[status_col]], useNA = "ifany"))
+}
+
+print_sample_counts("GBM",  "Chemo_status", c("NoChemo", "Chemo"))
+print_sample_counts("GBM",  "Radio_status", c("NoRadio", "Radio"))
+print_sample_counts("rGBM", "Chemo_status", c("NoChemo", "Chemo"))
+print_sample_counts("rGBM", "Radio_status", c("NoRadio", "Radio"))
+
+```
+
 
