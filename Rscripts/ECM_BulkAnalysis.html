@@ -1255,15 +1255,15 @@ print_sample_counts(&quot;GBM&quot;,  &quot;Chemo_status&quot;, c(&quot;NoChemo&
 </div>
 <div id="print-top-deg-for-ctrl-vs-gbmrgbm" class="section level3">
 <h3>Print top DEG for ctrl vs GBM/rGBM</h3>
-<pre class="r"><code># thresholds (match your volcano cutoffs)
+<pre class="r"><code># thresholds
 padj_cut &lt;- 0.05
 lfc_cut  &lt;- 1
 
-# helper to read + standardize column names
+# helper to read + standardize
 read_deg &lt;- function(path) {
   read_csv(path, show_col_types = FALSE) %&gt;%
-    rename(gene = `...1`) %&gt;%           # gene symbols
-    rename(log2FC = logFC, padj = adj.P.Val)  # standardize for easy filtering
+    rename(gene = `...1`) %&gt;% 
+    rename(log2FC = logFC, padj = adj.P.Val)
 }
 
 rgbm_df &lt;- read_deg(&quot;/Data/Outputs/DEG_rGBM_vs_Control.csv&quot;)</code></pre>
@@ -1272,7 +1272,7 @@ rgbm_df &lt;- read_deg(&quot;/Data/Outputs/DEG_rGBM_vs_Control.csv&quot;)</code>
 <pre class="r"><code>gbm_df  &lt;- read_deg(&quot;/Data/Outputs/DEG_GBM_vs_Control.csv&quot;)</code></pre>
 <pre><code>## New names:
 ## • `` -&gt; `...1`</code></pre>
-<pre class="r"><code># filter to &quot;volcano significant&quot;
+<pre class="r"><code># filter significant
 rgbm_sig &lt;- rgbm_df %&gt;%
   filter(padj &lt; padj_cut, abs(log2FC) &gt; lfc_cut) %&gt;%
   arrange(padj)
@@ -1281,56 +1281,106 @@ gbm_sig &lt;- gbm_df %&gt;%
   filter(padj &lt; padj_cut, abs(log2FC) &gt; lfc_cut) %&gt;%
   arrange(padj)
 
-# counts
-cat(&quot;rGBM vs Control: &quot;, nrow(rgbm_sig), &quot; significant genes\n&quot;, sep = &quot;&quot;)</code></pre>
-<pre><code>## rGBM vs Control: 83 significant genes</code></pre>
-<pre class="r"><code>cat(&quot;GBM  vs Control: &quot;, nrow(gbm_sig),  &quot; significant genes\n&quot;, sep = &quot;&quot;)</code></pre>
-<pre><code>## GBM  vs Control: 90 significant genes</code></pre>
-<pre class="r"><code># print gene lists to console
-cat(&quot;\nSignificant genes (rGBM vs Control):\n&quot;)</code></pre>
-<pre><code>## 
-## Significant genes (rGBM vs Control):</code></pre>
-<pre class="r"><code>print(rgbm_sig$gene)</code></pre>
-<pre><code>##  [1] &quot;TGFBI&quot;     &quot;COL6A1&quot;    &quot;LAMB2&quot;     &quot;TIMP1&quot;     &quot;MMP14&quot;     &quot;MMP2&quot;     
-##  [7] &quot;OMD&quot;       &quot;COL6A2&quot;    &quot;COL1A1&quot;    &quot;EMILIN1&quot;   &quot;COL3A1&quot;    &quot;CHI3L1&quot;   
-## [13] &quot;BGN&quot;       &quot;LOXL1&quot;     &quot;LAMA5&quot;     &quot;FN1&quot;       &quot;LAMB1&quot;     &quot;CD248&quot;    
-## [19] &quot;SPON2&quot;     &quot;COL5A1&quot;    &quot;LAMA4&quot;     &quot;SPOCK3&quot;    &quot;PXDN&quot;      &quot;CCDC80&quot;   
-## [25] &quot;MMP11&quot;     &quot;COL5A2&quot;    &quot;OLFML2B&quot;   &quot;NID1&quot;      &quot;RELN&quot;      &quot;MGP&quot;      
-## [31] &quot;EFEMP2&quot;    &quot;FCGBP&quot;     &quot;ESM1&quot;      &quot;ADAMTSL4&quot;  &quot;LTBP2&quot;     &quot;VEGFA&quot;    
-## [37] &quot;ECM1&quot;      &quot;LTBP3&quot;     &quot;HAPLN2&quot;    &quot;COL6A3&quot;    &quot;POSTN&quot;     &quot;ELN&quot;      
-## [43] &quot;LTBP1&quot;     &quot;ADAMTS9&quot;   &quot;LOX&quot;       &quot;ADAMTS7&quot;   &quot;OLFML2A&quot;   &quot;EGFLAM&quot;   
-## [49] &quot;GPC1&quot;      &quot;VASN&quot;      &quot;LUM&quot;       &quot;LTBP4&quot;     &quot;PTX3&quot;      &quot;WNT5A&quot;    
-## [55] &quot;PODNL1&quot;    &quot;SSC5D&quot;     &quot;FBLN5&quot;     &quot;MMP19&quot;     &quot;ELFN2&quot;     &quot;RTN4RL1&quot;  
-## [61] &quot;THBS1&quot;     &quot;CHADL&quot;     &quot;EFEMP1&quot;    &quot;COL14A1&quot;   &quot;NPNT&quot;      &quot;MMP9&quot;     
-## [67] &quot;LAMC3&quot;     &quot;TNXB&quot;      &quot;NID2&quot;      &quot;SPOCK1&quot;    &quot;TNFRSF11B&quot; &quot;FMOD&quot;     
-## [73] &quot;VCAN&quot;      &quot;FGF1&quot;      &quot;TNR&quot;       &quot;MMP23B&quot;    &quot;MATN2&quot;     &quot;ACAN&quot;     
-## [79] &quot;MMP7&quot;      &quot;LRRC3B&quot;    &quot;PTPRZ1&quot;    &quot;TIMP4&quot;     &quot;PI3&quot;</code></pre>
-<pre class="r"><code>cat(&quot;\nSignificant genes (GBM vs Control):\n&quot;)</code></pre>
-<pre><code>## 
-## Significant genes (GBM vs Control):</code></pre>
-<pre class="r"><code>print(gbm_sig$gene)</code></pre>
-<pre><code>##  [1] &quot;LAMB2&quot;    &quot;TGFBI&quot;    &quot;LAMA5&quot;    &quot;SPOCK3&quot;   &quot;FN1&quot;      &quot;OMD&quot;     
-##  [7] &quot;LAMA4&quot;    &quot;LAMB1&quot;    &quot;BGN&quot;      &quot;COL6A1&quot;   &quot;TIMP1&quot;    &quot;CD248&quot;   
-## [13] &quot;MMP14&quot;    &quot;EMILIN1&quot;  &quot;CHI3L1&quot;   &quot;COL3A1&quot;   &quot;MMP2&quot;     &quot;SPON2&quot;   
-## [19] &quot;COL6A2&quot;   &quot;PXDN&quot;     &quot;CCDC80&quot;   &quot;COL1A1&quot;   &quot;EFEMP2&quot;   &quot;LOXL1&quot;   
-## [25] &quot;NID1&quot;     &quot;ADAMTS9&quot;  &quot;LTBP3&quot;    &quot;ESM1&quot;     &quot;ECM1&quot;     &quot;OLFML2B&quot; 
-## [31] &quot;LAMC3&quot;    &quot;MMP11&quot;    &quot;ADAMTS7&quot;  &quot;MGP&quot;      &quot;COL5A2&quot;   &quot;RELN&quot;    
-## [37] &quot;COL5A1&quot;   &quot;FCGBP&quot;    &quot;ADAMTSL4&quot; &quot;HAPLN2&quot;   &quot;VEGFA&quot;    &quot;GPC1&quot;    
-## [43] &quot;OLFML2A&quot;  &quot;MMP9&quot;     &quot;LTBP4&quot;    &quot;ELN&quot;      &quot;TNXB&quot;     &quot;RTN4RL1&quot; 
-## [49] &quot;CHADL&quot;    &quot;SPOCK1&quot;   &quot;EGFLAM&quot;   &quot;WNT5A&quot;    &quot;LOX&quot;      &quot;POSTN&quot;   
-## [55] &quot;NID2&quot;     &quot;FGF1&quot;     &quot;MMP23B&quot;   &quot;PTPRZ1&quot;   &quot;MMP15&quot;    &quot;FBLN5&quot;   
-## [61] &quot;PTX3&quot;     &quot;ADAMTS10&quot; &quot;COL6A3&quot;   &quot;MMP19&quot;    &quot;ADAMTS15&quot; &quot;LUM&quot;     
-## [67] &quot;LTBP1&quot;    &quot;LTBP2&quot;    &quot;ELFN2&quot;    &quot;VCAN&quot;     &quot;EFEMP1&quot;   &quot;COL26A1&quot; 
-## [73] &quot;LRRC32&quot;   &quot;VASN&quot;     &quot;ACAN&quot;     &quot;NPNT&quot;     &quot;VWF&quot;      &quot;MATN2&quot;   
-## [79] &quot;FMOD&quot;     &quot;LAMA1&quot;    &quot;LRRC3B&quot;   &quot;TIMP4&quot;    &quot;THBS1&quot;    &quot;MMP7&quot;    
-## [85] &quot;FBN3&quot;     &quot;PODNL1&quot;   &quot;LRRC17&quot;   &quot;PI3&quot;      &quot;COL11A1&quot;  &quot;RARRES2&quot;</code></pre>
-<pre class="r"><code># save full significant tables
-write_csv(rgbm_sig, &quot;/Data/Outputs/DEG_rGBM_vs_Control_significant.csv&quot;)
-write_csv(gbm_sig, &quot;/Data/Outputs/DEG_GBM_vs_Control_significant.csv&quot;)
+# split into up and down
+rgbm_up   &lt;- rgbm_sig %&gt;% filter(log2FC &gt; 0)
+rgbm_down &lt;- rgbm_sig %&gt;% filter(log2FC &lt; 0)
 
-# also save &quot;genes only&quot; lists if you want quick copy/paste
-write_lines(rgbm_sig$gene, &quot;/Data/Outputs/DEG_rGBM_vs_Control_sig_genes.txt&quot;)
-write_lines(gbm_sig$gene,  &quot;/Data/Outputs/DEG_GBM_vs_Control_sig_genes.txt&quot;)</code></pre>
+gbm_up   &lt;- gbm_sig %&gt;% filter(log2FC &gt; 0)
+gbm_down &lt;- gbm_sig %&gt;% filter(log2FC &lt; 0)
+
+# counts
+cat(&quot;rGBM vs Control: &quot;, nrow(rgbm_up), &quot; up, &quot;, nrow(rgbm_down), &quot; down\n&quot;, sep=&quot;&quot;)</code></pre>
+<pre><code>## rGBM vs Control: 72 up, 11 down</code></pre>
+<pre class="r"><code>cat(&quot;GBM  vs Control: &quot;, nrow(gbm_up), &quot; up, &quot;, nrow(gbm_down), &quot; down\n&quot;, sep=&quot;&quot;)</code></pre>
+<pre><code>## GBM  vs Control: 79 up, 11 down</code></pre>
+<pre class="r"><code># print lists
+cat(&quot;\n--- rGBM vs Control ---\nUpregulated:\n&quot;)</code></pre>
+<pre><code>## 
+## --- rGBM vs Control ---
+## Upregulated:</code></pre>
+<pre class="r"><code>print(rgbm_up$gene)</code></pre>
+<pre><code>##  [1] &quot;TGFBI&quot;     &quot;COL6A1&quot;    &quot;LAMB2&quot;     &quot;TIMP1&quot;     &quot;MMP14&quot;     &quot;MMP2&quot;     
+##  [7] &quot;COL6A2&quot;    &quot;COL1A1&quot;    &quot;EMILIN1&quot;   &quot;COL3A1&quot;    &quot;CHI3L1&quot;    &quot;BGN&quot;      
+## [13] &quot;LOXL1&quot;     &quot;LAMA5&quot;     &quot;FN1&quot;       &quot;LAMB1&quot;     &quot;CD248&quot;     &quot;SPON2&quot;    
+## [19] &quot;COL5A1&quot;    &quot;LAMA4&quot;     &quot;PXDN&quot;      &quot;CCDC80&quot;    &quot;MMP11&quot;     &quot;COL5A2&quot;   
+## [25] &quot;OLFML2B&quot;   &quot;NID1&quot;      &quot;MGP&quot;       &quot;EFEMP2&quot;    &quot;FCGBP&quot;     &quot;ESM1&quot;     
+## [31] &quot;ADAMTSL4&quot;  &quot;LTBP2&quot;     &quot;VEGFA&quot;     &quot;ECM1&quot;      &quot;LTBP3&quot;     &quot;COL6A3&quot;   
+## [37] &quot;POSTN&quot;     &quot;ELN&quot;       &quot;LTBP1&quot;     &quot;ADAMTS9&quot;   &quot;LOX&quot;       &quot;ADAMTS7&quot;  
+## [43] &quot;OLFML2A&quot;   &quot;EGFLAM&quot;    &quot;GPC1&quot;      &quot;VASN&quot;      &quot;LUM&quot;       &quot;LTBP4&quot;    
+## [49] &quot;PTX3&quot;      &quot;WNT5A&quot;     &quot;PODNL1&quot;    &quot;SSC5D&quot;     &quot;FBLN5&quot;     &quot;MMP19&quot;    
+## [55] &quot;THBS1&quot;     &quot;EFEMP1&quot;    &quot;COL14A1&quot;   &quot;NPNT&quot;      &quot;MMP9&quot;      &quot;LAMC3&quot;    
+## [61] &quot;TNXB&quot;      &quot;NID2&quot;      &quot;TNFRSF11B&quot; &quot;FMOD&quot;      &quot;VCAN&quot;      &quot;MMP23B&quot;   
+## [67] &quot;MATN2&quot;     &quot;ACAN&quot;      &quot;MMP7&quot;      &quot;PTPRZ1&quot;    &quot;TIMP4&quot;     &quot;PI3&quot;</code></pre>
+<pre class="r"><code>cat(&quot;\nDownregulated:\n&quot;)</code></pre>
+<pre><code>## 
+## Downregulated:</code></pre>
+<pre class="r"><code>print(rgbm_down$gene)</code></pre>
+<pre><code>##  [1] &quot;OMD&quot;     &quot;SPOCK3&quot;  &quot;RELN&quot;    &quot;HAPLN2&quot;  &quot;ELFN2&quot;   &quot;RTN4RL1&quot; &quot;CHADL&quot;  
+##  [8] &quot;SPOCK1&quot;  &quot;FGF1&quot;    &quot;TNR&quot;     &quot;LRRC3B&quot;</code></pre>
+<pre class="r"><code>cat(&quot;\n--- GBM vs Control ---\nUpregulated:\n&quot;)</code></pre>
+<pre><code>## 
+## --- GBM vs Control ---
+## Upregulated:</code></pre>
+<pre class="r"><code>print(gbm_up$gene)</code></pre>
+<pre><code>##  [1] &quot;LAMB2&quot;    &quot;TGFBI&quot;    &quot;LAMA5&quot;    &quot;FN1&quot;      &quot;LAMA4&quot;    &quot;LAMB1&quot;   
+##  [7] &quot;BGN&quot;      &quot;COL6A1&quot;   &quot;TIMP1&quot;    &quot;CD248&quot;    &quot;MMP14&quot;    &quot;EMILIN1&quot; 
+## [13] &quot;CHI3L1&quot;   &quot;COL3A1&quot;   &quot;MMP2&quot;     &quot;SPON2&quot;    &quot;COL6A2&quot;   &quot;PXDN&quot;    
+## [19] &quot;CCDC80&quot;   &quot;COL1A1&quot;   &quot;EFEMP2&quot;   &quot;LOXL1&quot;    &quot;NID1&quot;     &quot;ADAMTS9&quot; 
+## [25] &quot;LTBP3&quot;    &quot;ESM1&quot;     &quot;ECM1&quot;     &quot;OLFML2B&quot;  &quot;LAMC3&quot;    &quot;MMP11&quot;   
+## [31] &quot;ADAMTS7&quot;  &quot;MGP&quot;      &quot;COL5A2&quot;   &quot;COL5A1&quot;   &quot;FCGBP&quot;    &quot;ADAMTSL4&quot;
+## [37] &quot;VEGFA&quot;    &quot;GPC1&quot;     &quot;OLFML2A&quot;  &quot;MMP9&quot;     &quot;LTBP4&quot;    &quot;ELN&quot;     
+## [43] &quot;TNXB&quot;     &quot;EGFLAM&quot;   &quot;WNT5A&quot;    &quot;LOX&quot;      &quot;POSTN&quot;    &quot;NID2&quot;    
+## [49] &quot;MMP23B&quot;   &quot;PTPRZ1&quot;   &quot;MMP15&quot;    &quot;FBLN5&quot;    &quot;PTX3&quot;     &quot;ADAMTS10&quot;
+## [55] &quot;COL6A3&quot;   &quot;MMP19&quot;    &quot;ADAMTS15&quot; &quot;LUM&quot;      &quot;LTBP1&quot;    &quot;LTBP2&quot;   
+## [61] &quot;VCAN&quot;     &quot;EFEMP1&quot;   &quot;LRRC32&quot;   &quot;VASN&quot;     &quot;ACAN&quot;     &quot;NPNT&quot;    
+## [67] &quot;VWF&quot;      &quot;MATN2&quot;    &quot;FMOD&quot;     &quot;LAMA1&quot;    &quot;TIMP4&quot;    &quot;THBS1&quot;   
+## [73] &quot;MMP7&quot;     &quot;FBN3&quot;     &quot;PODNL1&quot;   &quot;LRRC17&quot;   &quot;PI3&quot;      &quot;COL11A1&quot; 
+## [79] &quot;RARRES2&quot;</code></pre>
+<pre class="r"><code>cat(&quot;\nDownregulated:\n&quot;)</code></pre>
+<pre><code>## 
+## Downregulated:</code></pre>
+<pre class="r"><code>print(gbm_down$gene)</code></pre>
+<pre><code>##  [1] &quot;SPOCK3&quot;  &quot;OMD&quot;     &quot;RELN&quot;    &quot;HAPLN2&quot;  &quot;RTN4RL1&quot; &quot;CHADL&quot;   &quot;SPOCK1&quot; 
+##  [8] &quot;FGF1&quot;    &quot;ELFN2&quot;   &quot;COL26A1&quot; &quot;LRRC3B&quot;</code></pre>
+<pre class="r"><code># save separate files
+write_csv(rgbm_up,   &quot;/Data/Outputs/DEG_rGBM_vs_Control_up.csv&quot;)
+write_csv(rgbm_down, &quot;/Data/Outputs/DEG_rGBM_vs_Control_down.csv&quot;)
+
+write_csv(gbm_up,   &quot;/Data/Outputs/DEG_GBM_vs_Control_up.csv&quot;)
+write_csv(gbm_down, &quot;/Data/Outputs/DEG_GBM_vs_Control_down.csv&quot;)
+
+# also just the gene lists (quick txt files)
+write_lines(rgbm_up$gene,   &quot;/Data/Outputs/DEG_rGBM_vs_Control_up_genes.txt&quot;)
+write_lines(rgbm_down$gene, &quot;/Data/Outputs/DEG_rGBM_vs_Control_down_genes.txt&quot;)
+
+write_lines(gbm_up$gene,   &quot;/Data/Outputs/DEG_GBM_vs_Control_up_genes.txt&quot;)
+write_lines(gbm_down$gene, &quot;/Data/Outputs/DEG_GBM_vs_Control_down_genes.txt&quot;)</code></pre>
+<pre class="r"><code># First get the significant gene sets
+rgbm_genes &lt;- rgbm_sig$gene
+gbm_genes  &lt;- gbm_sig$gene
+
+# Find overlaps and unique sets
+overlap_genes &lt;- intersect(rgbm_genes, gbm_genes)
+rgbm_unique   &lt;- setdiff(rgbm_genes, gbm_genes)
+gbm_unique    &lt;- setdiff(gbm_genes, rgbm_genes)
+
+# Save to files
+write_lines(rgbm_unique, &quot;/Data/Outputs/DEG_rGBM_vs_Control_unique_genes.txt&quot;)
+write_lines(gbm_unique, &quot;/Data/Outputs/DEG_GBM_vs_Control_unique_genes.txt&quot;)
+write_lines(overlap_genes, &quot;/Data/Outputs/DEG_overlap_genes.txt&quot;)
+
+# If you also want up/down unique sets:
+rgbm_up_unique   &lt;- setdiff(rgbm_up$gene, gbm_up$gene)
+rgbm_down_unique &lt;- setdiff(rgbm_down$gene, gbm_down$gene)
+
+gbm_up_unique    &lt;- setdiff(gbm_up$gene, rgbm_up$gene)
+gbm_down_unique  &lt;- setdiff(gbm_down$gene, rgbm_down$gene)
+
+# Save those too
+write_lines(rgbm_up_unique,   &quot;/Data/Outputs/DEG_rGBM_vs_Control_unique_up.txt&quot;)
+write_lines(rgbm_down_unique, &quot;/Data/Outputs/DEG_rGBM_vs_Control_unique_down.txt&quot;)
+write_lines(gbm_up_unique,    &quot;/Data/Outputs/DEG_GBM_vs_Control_unique_up.txt&quot;)
+write_lines(gbm_down_unique,  &quot;/Data/Outputs/DEG_GBM_vs_Control_unique_down.txt&quot;)</code></pre>
 </div>
 </div>
 </div>
