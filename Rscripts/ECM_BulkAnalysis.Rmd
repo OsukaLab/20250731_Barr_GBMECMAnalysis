@@ -4,11 +4,11 @@ output: html_document
 date: "2025-07-31"
 ---
 
-#RNAseq ECM Analysis
+# RNAseq ECM Analysis
 
 To look at the gene expression of ECM genes across primary and recurrent GBM in CGGA data sets. 
 
-##Library
+## Library
 
 ```{r}
 library(tidyr)
@@ -592,7 +592,7 @@ ggplot(df_a, aes(PC1, PC2, color = group, shape = cohort)) +
 
 ### Compare DEG between control, GBM, and rGBM.
 
-####Prepare meta data
+#### Prepare meta data
 
 ```{r}
 # Make sure sample metadata matches the columns in expr_adj_tumoronly
@@ -857,6 +857,7 @@ p_gbm_radio
 p_rgbm_chemo
 p_rgbm_radio
 ```
+
 ```{r}
 ## ---- Print sample counts for each comparison ----
 
@@ -878,4 +879,51 @@ print_sample_counts("rGBM", "Radio_status", c("NoRadio", "Radio"))
 
 ```
 
+### Print top DEG for ctrl vs GBM/rGBM
+
+```{r}
+
+# thresholds (match your volcano cutoffs)
+padj_cut <- 0.05
+lfc_cut  <- 1
+
+# helper to read + standardize column names
+read_deg <- function(path) {
+  read_csv(path, show_col_types = FALSE) %>%
+    rename(gene = `...1`) %>%           # gene symbols
+    rename(log2FC = logFC, padj = adj.P.Val)  # standardize for easy filtering
+}
+
+rgbm_df <- read_deg("/Data/Outputs/DEG_rGBM_vs_Control.csv")
+gbm_df  <- read_deg("/Data/Outputs/DEG_GBM_vs_Control.csv")
+
+# filter to "volcano significant"
+rgbm_sig <- rgbm_df %>%
+  filter(padj < padj_cut, abs(log2FC) > lfc_cut) %>%
+  arrange(padj)
+
+gbm_sig <- gbm_df %>%
+  filter(padj < padj_cut, abs(log2FC) > lfc_cut) %>%
+  arrange(padj)
+
+# counts
+cat("rGBM vs Control: ", nrow(rgbm_sig), " significant genes\n", sep = "")
+cat("GBM  vs Control: ", nrow(gbm_sig),  " significant genes\n", sep = "")
+
+# print gene lists to console
+cat("\nSignificant genes (rGBM vs Control):\n")
+print(rgbm_sig$gene)
+
+cat("\nSignificant genes (GBM vs Control):\n")
+print(gbm_sig$gene)
+
+# save full significant tables
+write_csv(rgbm_sig, "/Data/Outputs/DEG_rGBM_vs_Control_significant.csv")
+write_csv(gbm_sig, "/Data/Outputs/DEG_GBM_vs_Control_significant.csv")
+
+# also save "genes only" lists if you want quick copy/paste
+write_lines(rgbm_sig$gene, "/Data/Outputs/DEG_rGBM_vs_Control_sig_genes.txt")
+write_lines(gbm_sig$gene,  "/Data/Outputs/DEG_GBM_vs_Control_sig_genes.txt")
+
+```
 
