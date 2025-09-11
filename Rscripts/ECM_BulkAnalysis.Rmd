@@ -712,6 +712,8 @@ readr::write_lines(gbm_down$gene,  "/Data/Outputs/DEG_GBM_vs_Control_down_genes.
 
 ## Gene specific analysis
 
+### Collagen
+
 ```{r}
 # 1) Genes + tumor subset
 genes_target <- toupper(c("COL1A1", "COL3A1"))
@@ -792,6 +794,95 @@ group_means <- df_long %>%
             n         = dplyr::n(), .groups = "drop")
 write_csv(group_means, "/Data/Outputs/TwoGene_GroupMeans_COL1A1_COL3A1.csv")
 group_means
+```
+
+
+### Metalloproteinase 
+
+```{r}
+# 1) Genes + tumor subset
+genes_target <- toupper(c("MMP2", "MMP9"))
+
+tumor_keep <- sample_meta_all$group %in% c("GBM", "rGBM")
+sm_tumor   <- droplevels(sample_meta_all[tumor_keep, ])
+Y_all      <- expr_adj_ecm[, tumor_keep, drop = FALSE]
+
+rownames(Y_all) <- toupper(rownames(Y_all))
+genes_found <- intersect(genes_target, rownames(Y_all))
+if (length(genes_found) == 0) stop("Requested genes not found in expr_adj_ecm.")
+if (length(setdiff(genes_target, genes_found)) > 0)
+  warning("Missing genes: ", paste(setdiff(genes_target, genes_found), collapse = ", "))
+
+Y <- Y_all[genes_found, , drop = FALSE]
+
+# 2) Limma design (rGBM - GBM)
+sm_tumor$group <- factor(sm_tumor$group, levels = c("GBM", "rGBM"))
+design <- model.matrix(~ 0 + group, data = sm_tumor)
+colnames(design) <- levels(sm_tumor$group)
+contrast <- makeContrasts(rGBM_vs_GBM = rGBM - GBM, levels = design)
+
+fit  <- lmFit(Y, design)
+fit2 <- eBayes(contrasts.fit(fit, contrast))
+res  <- topTable(fit2, coef = "rGBM_vs_GBM", number = Inf, adjust.method = "BH")
+
+res_out <- res %>%
+  tibble::rownames_to_column("gene") %>%
+  dplyr::transmute(gene, logFC, AveExpr, t, P.Value, adj.P.Val, B) %>%
+  dplyr::arrange(adj.P.Val)
+
+write_csv(res_out, "/Data/Outputs/TwoGene_DEG_rGBM_vs_GBM_MMP2_MMP9.csv")
+
+# 3) Long table + plot
+df_long <- Y %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene") %>%
+  tidyr::pivot_longer(-Gene, names_to = "sample_id", values_to = "log2_expr") %>%
+  dplyr::left_join(sm_tumor %>% dplyr::select(sample_id, group), by = "sample_id") %>%
+  dplyr::mutate(
+    Gene  = factor(Gene, levels = genes_found),
+    group = factor(group, levels = c("GBM", "rGBM"))
+  )
+
+group_cols <- c(GBM = "#1f77b4", rGBM = "#d62728")
+
+p_two_gene <- ggplot(df_long, aes(x = group, y = log2_expr, fill = group)) +
+  geom_boxplot(width = 0.65, outlier.size = 0.6, alpha = 0.9, color = "grey20") +
+  geom_jitter(width = 0.12, alpha = 0.5, size = 1.6, color = "black") +
+  scale_fill_manual(values = group_cols) +
+  facet_wrap(~ Gene, nrow = 1, scales = "free_y") +
+  labs(
+    title = "MMP2 and MMP9 expression (log2(FPKM+1))",
+    subtitle = "Batch-adjusted (tumor-only correction); rGBM vs GBM",
+    x = NULL, y = "log2 expression"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none",
+        panel.grid.minor = element_blank(),
+        strip.background = element_rect(fill = "grey90"))
+
+caption_txt <- paste(
+  paste0(res_out$gene, ": logFC(rGBM-GBM)=", round(res_out$logFC, 3),
+         ", adj.P.Val=", signif(res_out$adj.P.Val, 3)),
+  collapse = "   |   "
+)
+p_two_gene <- p_two_gene + labs(caption = caption_txt)
+
+print(p_two_gene)
+ggsave("/Data/Outputs/TwoGene_MMP2_MMP9_rGBM_vs_GBM.pdf",
+       plot = p_two_gene, width = 7.5, height = 4.0, units = "in", device = cairo_pdf)
+
+# 4) Quick group means table
+group_means <- df_long %>%
+  dplyr::group_by(Gene, group) %>%
+  dplyr::summarize(
+    mean_log2 = mean(log2_expr, na.rm = TRUE),
+    sd_log2   = sd(log2_expr, na.rm = TRUE),
+    n         = dplyr::n(),
+    .groups   = "drop"
+  )
+write_csv(group_means, "/Data/Outputs/TwoGene_GroupMeans_MMP2_MMP9.csv")
+group_means
+
 ```
 
 
