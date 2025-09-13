@@ -1,14 +1,16 @@
 ---
-title: "ECM_BulkAnalysis"
+title: "GBM ECM Analysis"
 output: html_document
 date: "2025-07-31"
 ---
 
-# RNAseq ECM Analysis
+# GBM ECM Analysis
+
+## RNAseq ECM Analysis
 
 To look at the gene expression of ECM genes across primary and recurrent GBM in CGGA data sets. 
 
-## Library
+### Library
 
 ```{r}
 library(tidyr)
@@ -23,13 +25,13 @@ library(tidyverse)
 library(tibble)
 library(readr)
 ```
-## Download and upload input data
+### Download and upload input data
 
 Data downloaded from https://www.cgga.org.cn/download.jsp
 
 Data that are already downloaded are not downloaded again. Chunks are skipped using , eval = FALSE in chunk. 
 
-### Download mRNAseq_693 data
+#### Download mRNAseq_693 data
 
 ```{r, eval = FALSE}
 # Download expression data from STAR+RSEM (FPKM Value) 
@@ -55,7 +57,7 @@ unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_693_clinical.20200506.txt.zip"), e
 unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
 
 ```
-### Download mRNAseq_325 data
+#### Download mRNAseq_325 data
 
 ```{r, eval = FALSE}
 # Download expression data from STAR+RSEM (FPKM Value)
@@ -80,7 +82,7 @@ GET(
 unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_325_clinical.20200506.txt.zip"), exdir = "/Data/Inputs")
 unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
 ```
-### Download non-glioma control gene expression
+#### Download non-glioma control gene expression
 
 ```{r, eval = FALSE}
 # Download expression data from STAR+RSEM (FPKM Value)
@@ -96,7 +98,7 @@ unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
 
 ```
 
-## Filtering data to only include samples that follow WHO 2021 classification. 
+### Filtering data to only include samples that follow WHO 2021 classification. 
 
 
 Removed Samples that are not classified as GBM.
@@ -132,7 +134,7 @@ cgga325_meta_gbm <- cgga325_meta %>%
 
 The meta data shows many columns describing the phenotype of each sample. Within the meta data, irradiation status is listed as 0 or 1. Gene expression profile of ECM genes should be analyzed between recurrent tumors that received irradiation and tumors that did not. This may give insight into irradiation induced ECM change. 
 
-## Add filters to gene expression data
+### Add filters to gene expression data
 
 ```{r}
 # Load CGGA-693 gene expression data
@@ -148,7 +150,7 @@ cgga325_expr <- read.delim("/Data/Inputs/CGGA.mRNAseq_325.RSEM-genes.20200506.tx
                            stringsAsFactors = FALSE)
 ```
 
-### Filter expression data using filtered meta data
+#### Filter expression data using filtered meta data
 
 There is a problem using select() function, so the code below specifies to use dplyr 
 
@@ -174,7 +176,7 @@ cgga325_meta_gbm_ord <- cgga325_meta_gbm %>%
   dplyr::slice(match(ids_325, CGGA_ID))
 ```
 
-## Load non-glioma control to environment
+### Load non-glioma control to environment
 
 ```{r}
 # Load the control expression data
@@ -185,7 +187,7 @@ control_expr <- read.delim("/Data/Inputs/CGGA_RNAseq_Control_20.txt",
 ```
 
 
-## Load GO ECM Gene set
+### Load GO ECM Gene set
 
 ```{r}
 # ECM genes from GO:0031012 
@@ -208,7 +210,7 @@ ecm_genes_tbl <- ecm_genes_raw %>%
 ecm_gene_list <- unique(ecm_genes_tbl$hgnc_symbol)
 ```
 
-## Merge all Genes and Data
+### Merge all Genes and Data
 ```{r}
 # ---- Harmonize control column name (as you already do later) ----
 control_expr <- control_expr %>%
@@ -276,7 +278,7 @@ stopifnot(sum(duplicated(colnames(merged_expr_all))) == 0)
 
 ```
 
-#### Merge meta data
+##### Merge meta data
 
 ```{r}
 merged_samples <- colnames(merged_expr_all)[-1]
@@ -364,7 +366,7 @@ stopifnot(setequal(sample_meta_all$sample_id, merged_samples))
 
 ```
 
-## Normalization and QC
+### Normalization and QC
 
 ```{r}
 # Wide genes x samples matrix
@@ -403,7 +405,7 @@ ggplot(expr_all_long, aes(x = sample_id, y = log2_expr, fill = group)) +
         legend.position = "top")
 
 ```
-### Batch effect correction
+#### Batch effect correction
 
 ```{r}
 # Indices
@@ -470,7 +472,7 @@ ggplot(df_a, aes(PC1, PC2, color = group, shape = cohort)) +
   theme(panel.grid.minor = element_blank(), legend.position = "top")
 
 ```
-## Apply GO ECM gene list
+### Apply GO ECM gene list
 ```{r}
 
 # Subset the **adjusted** matrix to ECM genes
@@ -503,11 +505,11 @@ expr_adj_ecm_long <- expr_adj_ecm %>%
 
 ```
 
-## DEG analysis
+### DEG analysis
 
-### Compare DEG between control, GBM, and rGBM.
+#### Compare DEG between control, GBM, and rGBM.
 
-#### Prepare meta data
+##### Prepare meta data
 
 ```{r}
 # ECM matrix to analyze (genes x samples)
@@ -560,7 +562,7 @@ write.csv(deg_rGBM_vs_GBM,     "/Data/Outputs/DEG_rGBM_vs_GBM.csv",     row.name
 
 ```
 
-#### Plot Volcano 
+##### Plot Volcano 
 
 ```{r}
 # your make_volcano() is good as-is
@@ -581,7 +583,7 @@ ggsave("/Data/Outputs/Volcano_rGBM_vs_GBM_adjfc.pdf",        plot = p3_adj, widt
 
 ```
 
-#### Sample counts
+##### Sample counts
 ```{r}
 cat("\n=== Overall samples by group (ECM set) ===\n")
 print(table(sample_meta$group, useNA = "ifany"))
@@ -602,7 +604,7 @@ print_pair_counts("rGBM", "GBM",     label = "rGBM vs GBM")
 
 
 
-### Compare DEG using Chemo and Radio status
+#### Compare DEG using Chemo and Radio status
 
 ```{r}
 run_simple_deg <- function(group_filter, status_col, status_labels,
@@ -710,9 +712,9 @@ readr::write_lines(gbm_down$gene,  "/Data/Outputs/DEG_GBM_vs_Control_down_genes.
 
 ```
 
-## Gene specific analysis
+### Gene specific analysis
 
-### Collagen
+#### Collagen
 
 ```{r}
 # 1) Genes + tumor subset
@@ -797,7 +799,7 @@ group_means
 ```
 
 
-### Metalloproteinase 
+#### Metalloproteinase 
 
 ```{r}
 # 1) Genes + tumor subset
@@ -885,7 +887,431 @@ group_means
 
 ```
 
+## GeoMx Data
+
+### WT Primary vs Rec GBM Data
+
+Hasan already created the DEG csv so i downloaded it from his code and used the CSV for the creation of the following analysis.
+
+#### Filter csv
+
+```{r}
+
+# Load DE table and filter to ECM genes
+df_ecm <- read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) %>%
+  rename(
+    estimate = Estimate,
+    pval     = `Pr(>|t|)`,
+    gene     = Gene,
+    group1   = Group1,
+    group2   = Group2,
+    fdr      = FDR
+  ) %>%
+  mutate(gene = trimws(as.character(gene))) %>%
+  filter(gene %in% ecm_gene_list)
+
+# (Optional quick peek)
+message("# rows after ECM filter: ", nrow(df_ecm))
+print(head(df_ecm, 10))
+
+```
 
 
+```{r}
 
+# --- Data (use df_ecm if present, else load full CSV) ---
+data_to_plot <- if (exists("df_ecm")) {
+  df_ecm
+} else {
+  read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
+    rename(
+      estimate = Estimate,
+      pval     = `Pr(>|t|)`,
+      gene     = Gene,
+      group1   = Group1,
+      group2   = Group2,
+      fdr      = FDR
+    )
+}
+
+# --- Parameters ---
+outdir  <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
+fdr_cut <- 0.05
+lfc_cut <- 0.25         # set to 0 if you only want FDR thresholding
+n_label <- 15           # top-N labels by FDR
+
+# --- Prep ---
+dfp <- data_to_plot |>
+  mutate(
+    fdr = as.numeric(fdr),
+    estimate = as.numeric(estimate),
+    fdr_clamped = pmax(fdr, 1e-300),             # avoid Inf from log10(0)
+    neglog10_fdr = -log10(fdr_clamped),
+    status = case_when(
+      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
+      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
+      TRUE ~ "NS"
+    )
+  )
+
+# label the top-N smallest FDR genes
+labs_to_label <- dfp |> arrange(fdr) |> slice_head(n = n_label) |> pull(gene)
+
+# comparison tag for filenames
+g1 <- unique(dfp$group1)[1] %||% "Group1"
+g2 <- unique(dfp$group2)[1] %||% "Group2"
+cmp_tag <- paste0(g1, "_vs_", g2)
+
+# --- Volcano (x = Estimate; y = -log10(FDR)) ---
+p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
+  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
+  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
+  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
+  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
+  geom_text_repel(
+    data = dfp |> filter(gene %in% labs_to_label),
+    aes(label = gene),
+    max.overlaps = Inf, box.padding = 0.35, point.padding = 0.2,
+    min.segment.length = 0, seed = 123, size = 3
+  ) +
+  labs(
+    title = paste0(cmp_tag, " — Volcano (y = −log10 FDR)"),
+    x = expression(log[2]~fold~change~(Estimate)),
+    y = expression(-log[10]~FDR),
+    color = NULL
+  ) +
+  theme_minimal(base_size = 12)
+
+# --- Save ---
+ggsave(file.path(outdir, paste0("volcano_PADJ_vs_Estimate_", cmp_tag, ".pdf")),
+       p_volc, width = 7, height = 5)
+
+
+# Quick counts (optional)
+dfp |> summarise(
+  n_total = n(),
+  n_sig   = sum(fdr < fdr_cut, na.rm = TRUE),
+  n_up    = sum(fdr < fdr_cut & estimate > 0, na.rm = TRUE),
+  n_down  = sum(fdr < fdr_cut & estimate < 0, na.rm = TRUE)
+) |> print()
+
+```
+```{r}
+
+# Paths
+infile <- "/Data/Inputs/WT_DE_analysis.csv"
+outdir <- "/Data/Outputs/GeoMx"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+outfile <- file.path(outdir, "WT_DE_analysis_filtered_to_ECM_GO0031012.csv")
+
+# Ensure we have the ECM list
+stopifnot(exists("ecm_gene_list"), length(ecm_gene_list) > 0)
+
+# Use existing df_ecm if present; otherwise load and filter now
+df_ecm <- if (exists("df_ecm")) {
+  df_ecm
+} else {
+  read_csv(infile, show_col_types = FALSE) |>
+    rename(
+      estimate = Estimate,
+      pval     = `Pr(>|t|)`,
+      gene     = Gene,
+      group1   = Group1,
+      group2   = Group2,
+      fdr      = FDR
+    ) |>
+    mutate(gene = trimws(as.character(gene))) |>
+    filter(gene %in% ecm_gene_list)
+}
+
+# Save
+write_csv(df_ecm, outfile)
+
+cat("Saved:", outfile, "\nRows:", nrow(df_ecm), " Unique genes:", dplyr::n_distinct(df_ecm$gene), "\n")
+
+```
+
+```{r}
+
+# --- Data (use df_ecm if present, else load CSV) ---
+data_to_plot <- if (exists("df_ecm")) {
+  df_ecm
+} else {
+  read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
+    rename(
+      estimate = Estimate,
+      pval     = `Pr(>|t|)`,
+      gene     = Gene,
+      group1   = Group1,
+      group2   = Group2,
+      fdr      = FDR
+    )
+}
+
+# --- Parameters ---
+outdir  <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
+fdr_cut <- 0.05
+lfc_cut <- 0.25
+n_label <- 20   # label top 20
+
+# --- Prep ---
+dfp <- data_to_plot |>
+  mutate(
+    fdr = as.numeric(fdr),
+    estimate = as.numeric(estimate),
+    fdr_clamped = pmax(fdr, 1e-300),
+    neglog10_fdr = -log10(fdr_clamped),
+    status = case_when(
+      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
+      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
+      TRUE ~ "NS"
+    )
+  )
+
+labs_to_label <- dfp |> arrange(fdr) |> slice_head(n = n_label) |> pull(gene)
+
+g1 <- unique(dfp$group1)[1] %||% "Group1"
+g2 <- unique(dfp$group2)[1] %||% "Group2"
+cmp_tag <- paste0(g1, "_vs_", g2)
+
+# --- Volcano plot ---
+p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
+  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
+  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
+  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
+  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
+  geom_text_repel(
+    data = dfp |> filter(gene %in% labs_to_label),
+    aes(label = gene),
+    max.overlaps = Inf,
+    box.padding = 0.35,
+    point.padding = 0.2,
+    min.segment.length = 0,
+    seed = 123,
+    size = 3
+  ) +
+  labs(
+    title = paste0(cmp_tag, " — Volcano (top ", n_label, " labeled)"),
+    x = expression(log[2]~fold~change~(Estimate)),
+    y = expression(-log[10]~FDR),
+    color = NULL
+  ) +
+  theme_minimal(base_size = 12)
+
+# --- Save PDF only ---
+ggsave(file.path(outdir, paste0("volcano_PADJ_vs_Estimate_top", n_label, "_", cmp_tag, ".pdf")),
+       p_volc, width = 7, height = 5)
+
+```
+
+
+```{r}
+
+# --- Data (use df_ecm if present, else load full CSV) ---
+data_use <- if (exists("df_ecm")) {
+  df_ecm
+} else {
+  read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
+    rename(
+      estimate = Estimate,
+      pval     = `Pr(>|t|)`,
+      gene     = Gene,
+      group1   = Group1,
+      group2   = Group2,
+      fdr      = FDR
+    )
+}
+
+# --- Params/paths ---
+outdir  <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
+fdr_cut <- 0.05
+
+# Determine comparison labels for filenames
+g1 <- unique(data_use$group1)[1] %||% "Group1"
+g2 <- unique(data_use$group2)[1] %||% "Group2"
+cmp_tag <- paste0(g1, "_vs_", g2)
+
+# --- Split significant sets (FDR only) ---
+sig_all <- data_use %>%
+  mutate(
+    direction = case_when(
+      estimate > 0 ~ paste0("Higher in ", g1),
+      estimate < 0 ~ paste0("Higher in ", g2),
+      TRUE ~ "No change"
+    )
+  ) %>%
+  filter(!is.na(fdr), fdr < fdr_cut)
+
+sig_up_in_g1 <- sig_all %>% filter(estimate > 0) %>% arrange(fdr)
+sig_up_in_g2 <- sig_all %>% filter(estimate < 0) %>% arrange(fdr)
+
+# --- Save full tables ---
+write_csv(sig_up_in_g1,
+          file.path(outdir, paste0("sig_up_in_", g1, "_FDRlt", fdr_cut, "_", cmp_tag, ".csv")))
+write_csv(sig_up_in_g2,
+          file.path(outdir, paste0("sig_up_in_", g2, "_FDRlt", fdr_cut, "_", cmp_tag, ".csv")))
+
+# --- Print tidy preview tables (top 25 each) ---
+preview_up_g1 <- sig_up_in_g1 %>%
+  dplyr::select(gene, estimate, pval, fdr, direction) %>%
+  dplyr::slice_head(n = 25)
+
+preview_up_g2 <- sig_up_in_g2 %>%
+  dplyr::select(gene, estimate, pval, fdr, direction) %>%
+  dplyr::slice_head(n = 25)
+
+cat("\n== Significant (FDR < 0.05) — Up in ", g1, " ==\n", sep = "")
+if ("knitr" %in% rownames(installed.packages())) {
+  knitr::kable(preview_up_g1, digits = 4)
+} else {
+  print(preview_up_g1, n = nrow(preview_up_g1))
+}
+
+cat("\n== Significant (FDR < 0.05) — Up in ", g2, " ==\n", sep = "")
+if ("knitr" %in% rownames(installed.packages())) {
+  knitr::kable(preview_up_g2, digits = 4)
+} else {
+  print(preview_up_g2, n = nrow(preview_up_g2))
+}
+
+
+# --- Quick counts ---
+summary_counts <- tibble(
+  total_tested   = nrow(data_use),
+  total_sig      = nrow(sig_all),
+  sig_up_in_g1   = nrow(sig_up_in_g1),
+  sig_up_in_g2   = nrow(sig_up_in_g2)
+)
+print(summary_counts)
+
+```
+```{r}
+
+# Use ECM-filtered table if present; else load full table
+data_use <- if (exists("df_ecm")) {
+  df_ecm
+} else {
+  readr::read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
+    dplyr::rename(
+      estimate = Estimate,
+      pval     = `Pr(>|t|)`,
+      gene     = Gene,
+      group1   = Group1,
+      group2   = Group2,
+      fdr      = FDR
+    )
+}
+
+# Clean & ensure numeric
+data_use <- data_use |>
+  dplyr::mutate(estimate = as.numeric(estimate)) |>
+  dplyr::filter(!is.na(estimate))
+
+# Top 10 most positive (higher in Group1/Pri)
+top10_pos <- data_use |>
+  dplyr::filter(estimate > 0) |>
+  dplyr::arrange(dplyr::desc(estimate)) |>
+  dplyr::slice_head(n = 10) |>
+  dplyr::select(gene, estimate, pval, fdr)
+
+# Top 10 most negative (higher in Group2/Rec)
+top10_neg <- data_use |>
+  dplyr::filter(estimate < 0) |>
+  dplyr::arrange(estimate) |>
+  dplyr::slice_head(n = 10) |>
+  dplyr::select(gene, estimate, pval, fdr)
+
+# Print nicely
+cat("\n== Top 10 most positive log2FC (higher in ", unique(data_use$group1)[1], ") ==\n", sep = "")
+if ("knitr" %in% rownames(installed.packages())) knitr::kable(top10_pos, digits = 4) else print(top10_pos, n = 10)
+
+cat("\n== Top 10 most negative log2FC (higher in ", unique(data_use$group2)[1], ") ==\n", sep = "")
+if ("knitr" %in% rownames(installed.packages())) knitr::kable(top10_neg, digits = 4) else print(top10_neg, n = 10)
+
+# (Optional) Save to disk
+outdir <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
+readr::write_csv(top10_pos, file.path(outdir, "top10_positive_log2FC.csv"))
+readr::write_csv(top10_neg, file.path(outdir, "top10_negative_log2FC.csv"))
+
+```
+```{r}
+
+# --- Data (prefer ECM-filtered if present) ---
+data_to_plot <- if (exists("df_ecm")) {
+  df_ecm
+} else {
+  readr::read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
+    dplyr::rename(
+      estimate = Estimate,
+      pval     = `Pr(>|t|)`,
+      gene     = Gene,
+      group1   = Group1,
+      group2   = Group2,
+      fdr      = FDR
+    )
+}
+
+# --- Parameters ---
+outdir       <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
+fdr_cut      <- 0.05
+lfc_cut      <- 0.25         # set to 0 if you only want FDR thresholding
+n_label_abs  <- 10           # <— label N genes with largest |Estimate|
+
+# --- Prep ---
+dfp <- data_to_plot |>
+  dplyr::mutate(
+    estimate      = as.numeric(estimate),
+    fdr           = as.numeric(fdr),
+    fdr_clamped   = pmax(fdr, 1e-300),           # avoid Inf from log10(0)
+    neglog10_fdr  = -log10(fdr_clamped),
+    abs_estimate  = abs(estimate),
+    status = dplyr::case_when(
+      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
+      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
+      TRUE ~ "NS"
+    )
+  )
+
+# Genes to label: top N by |Estimate|
+labs_to_label <- dfp |>
+  dplyr::arrange(dplyr::desc(abs_estimate)) |>
+  dplyr::slice_head(n = n_label_abs) |>
+  dplyr::pull(gene)
+
+# Comparison tag for filenames
+g1 <- unique(dfp$group1)[1]; if (is.null(g1) || is.na(g1)) g1 <- "Group1"
+g2 <- unique(dfp$group2)[1]; if (is.null(g2) || is.na(g2)) g2 <- "Group2"
+cmp_tag <- paste0(g1, "_vs_", g2)
+
+# --- Volcano (x = Estimate; y = -log10(FDR)) with |Estimate| labels ---
+p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
+  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
+  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
+  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
+  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
+  ggrepel::geom_text_repel(
+    data = dfp |> dplyr::filter(gene %in% labs_to_label),
+    aes(label = gene),
+    max.overlaps = Inf,
+    box.padding = 0.35,
+    point.padding = 0.2,
+    min.segment.length = 0,
+    seed = 123,
+    size = 3
+  ) +
+  labs(
+    title = paste0(cmp_tag, " — Volcano (labels: top ", n_label_abs, " by |log2FC|)"),
+    x = expression(log[2]~fold~change~(Estimate)),
+    y = expression(-log[10]~FDR),
+    color = NULL
+  ) +
+  theme_minimal(base_size = 12)
+
+# --- Save PDF only ---
+ggsave(
+  filename = file.path(outdir, paste0("volcano_labelTopAbsLFC_", n_label_abs, "_", cmp_tag, ".pdf")),
+  plot = p_volc, width = 7, height = 5
+)
+
+```
 
