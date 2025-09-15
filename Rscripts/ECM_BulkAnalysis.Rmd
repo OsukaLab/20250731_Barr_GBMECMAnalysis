@@ -1315,3 +1315,161 @@ ggsave(
 
 ```
 
+#### Flipped for rec vs pri
+```{r}
+
+# If you already have data_use, keep it; else load:
+if (!exists("data_use")) {
+  data_use <- readr::read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) %>%
+    dplyr::rename(
+      estimate = Estimate, pval = `Pr(>|t|)`, gene = Gene,
+      group1 = Group1, group2 = Group2, fdr = FDR
+    )
+}
+
+outdir <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
+
+# SAFE flip: Rec − Pri (negate estimate, swap groups via temp)
+data_flip <- data_use %>%
+  dplyr::mutate(
+    estimate = -as.numeric(estimate),
+    .g1 = group1, .g2 = group2
+  ) %>%
+  dplyr::mutate(group1 = .g2, group2 = .g1) %>%
+  dplyr::select(-.g1, -.g2)
+
+# Quick sanity check: should *not* be the same
+# print(dplyr::count(data_flip, group1, group2))
+
+# Save flipped CSV
+g1_new <- unique(data_flip$group1)[1] %||% "Group1"
+g2_new <- unique(data_flip$group2)[1] %||% "Group2"
+cmp_tag <- paste0(g1_new, "_vs_", g2_new)
+flipped_csv <- file.path(outdir, paste0("WT_DE_analysis_FLIPPED_", cmp_tag, ".csv"))
+readr::write_csv(data_flip, flipped_csv)
+
+# Volcano with top 20 by |log2FC| (PDF only)
+fdr_cut <- 0.05; lfc_cut <- 0.25; n_label_abs <- 20
+dfp <- data_flip %>%
+  dplyr::mutate(
+    fdr = as.numeric(fdr),
+    fdr_clamped = pmax(fdr, 1e-300),
+    neglog10_fdr = -log10(fdr_clamped),
+    abs_estimate = abs(estimate),
+    status = dplyr::case_when(
+      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
+      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
+      TRUE ~ "NS"
+    )
+  )
+labs_to_label <- dfp %>% dplyr::arrange(dplyr::desc(abs_estimate)) %>%
+  dplyr::slice_head(n = n_label_abs) %>% dplyr::pull(gene)
+
+p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
+  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
+  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
+  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
+  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
+  ggrepel::geom_text_repel(
+    data = dplyr::filter(dfp, gene %in% labs_to_label),
+    aes(label = gene), max.overlaps = Inf, box.padding = 0.35,
+    point.padding = 0.2, min.segment.length = 0, seed = 123, size = 3
+  ) +
+  labs(
+    title = paste0(cmp_tag, " — Volcano (labels: top ", n_label_abs, " by |log2FC|)"),
+    x = expression(log[2]~fold~change~(Estimate)),
+    y = expression(-log[10]~FDR),
+    color = NULL
+  ) +
+  theme_minimal(base_size = 12)
+
+pdf_path <- file.path(outdir, paste0("volcano_FLIPPED_labelTopAbsLFC_", n_label_abs, "_", cmp_tag, ".pdf"))
+ggsave(pdf_path, p_volc, width = 7, height = 5)
+
+cat("Fixed labels ✅\nFlipped CSV: ", flipped_csv, "\nVolcano PDF: ", pdf_path, "\n", sep = "")
+
+```
+
+
+```{r}
+# Filtered ECM only 
+
+# Paths/params
+infile  <- "/Data/Inputs/WT_DE_analysis.csv"
+outdir  <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
+fdr_cut <- 0.05; lfc_cut <- 0.25; n_label_abs <- 20
+
+# 1) Load raw
+df_raw <- readr::read_csv(infile, show_col_types = FALSE) %>%
+  dplyr::rename(
+    estimate = Estimate, pval = `Pr(>|t|)`, gene = Gene,
+    group1 = Group1, group2 = Group2, fdr = FDR
+  ) %>%
+  dplyr::mutate(estimate = as.numeric(estimate), fdr = as.numeric(fdr))
+
+# 2) Ensure ECM filtering
+data_use <- if (exists("df_ecm")) {
+  df_ecm
+} else if (exists("ecm_gene_list")) {
+  df_raw %>% dplyr::filter(gene %in% ecm_gene_list)
+} else {
+  message("Warning: ecm_gene_list not found — using full table (unfiltered).")
+  df_raw
+}
+
+# 3) Flip comparison (Rec − Pri) safely (use temp columns for swap)
+data_flip <- data_use %>%
+  dplyr::mutate(
+    estimate = -estimate,
+    .g1 = group1, .g2 = group2
+  ) %>%
+  dplyr::mutate(group1 = .g2, group2 = .g1) %>%
+  dplyr::select(-.g1, -.g2)
+
+# 4) Save flipped ECM CSV
+g1_new <- unique(data_flip$group1)[1] %||% "Group1"
+g2_new <- unique(data_flip$group2)[1] %||% "Group2"
+cmp_tag <- paste0(g1_new, "_vs_", g2_new)
+flipped_csv <- file.path(outdir, paste0("WT_DE_analysis_FLIPPED_ECM_", cmp_tag, ".csv"))
+readr::write_csv(data_flip, flipped_csv)
+
+# 5) Volcano (PDF only), label top 20 by |log2FC|
+dfp <- data_flip %>%
+  dplyr::mutate(
+    fdr_clamped  = pmax(fdr, 1e-300),
+    neglog10_fdr = -log10(fdr_clamped),
+    abs_estimate = abs(estimate),
+    status = dplyr::case_when(
+      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
+      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
+      TRUE ~ "NS"
+    )
+  )
+labs_to_label <- dfp %>% dplyr::arrange(dplyr::desc(abs_estimate)) %>%
+  dplyr::slice_head(n = n_label_abs) %>% dplyr::pull(gene)
+
+p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
+  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
+  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
+  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
+  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
+  ggrepel::geom_text_repel(
+    data = dplyr::filter(dfp, gene %in% labs_to_label),
+    aes(label = gene), max.overlaps = Inf, box.padding = 0.35,
+    point.padding = 0.2, min.segment.length = 0, seed = 123, size = 3
+  ) +
+  labs(
+    title = paste0(cmp_tag, " (ECM) — Volcano (labels: top ", n_label_abs, " by |log2FC|)"),
+    x = expression(log[2]~fold~change~(Estimate)),
+    y = expression(-log[10]~FDR),
+    color = NULL
+  ) +
+  theme_minimal(base_size = 12)
+
+pdf_path <- file.path(outdir, paste0("volcano_FLIPPED_ECM_labelTopAbsLFC_", n_label_abs, "_", cmp_tag, ".pdf"))
+ggsave(pdf_path, p_volc, width = 7, height = 5)
+
+cat("Flipped (ECM) CSV:\n  ", flipped_csv, "\nVolcano PDF:\n  ", pdf_path, "\n", sep = "")
+
+```
+
