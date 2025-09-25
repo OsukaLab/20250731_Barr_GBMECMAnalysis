@@ -880,7 +880,7 @@ caption_txt <- paste(
 p_two_gene <- p_two_gene + ggplot2::labs(caption = caption_txt)
 
 print(p_two_gene)
-ggplot2::ggsave(pdf_plot, plot = p_two_gene, width = 3, height = 4.0, units = "in", device = cairo_pdf)
+ggplot2::ggsave(pdf_plot, plot = p_two_gene, width = 5, height = 3, units = "in", device = cairo_pdf)
 
 # 4) Quick group means table
 group_means <- df_long %>%
