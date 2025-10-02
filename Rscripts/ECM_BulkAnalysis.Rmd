@@ -24,6 +24,11 @@ library(ggrepel)
 library(tidyverse)
 library(tibble)
 library(readr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(survival)
+library(survminer)
 ```
 ### Download and upload input data
 
@@ -281,26 +286,21 @@ stopifnot(sum(duplicated(colnames(merged_expr_all))) == 0)
 ##### Merge meta data
 
 ```{r}
+# --- MERGE META DATA (with survival) ---
+
+
+# 'merged_expr_all' already built above
 merged_samples <- colnames(merged_expr_all)[-1]
 
-# Order-preserved clinical bits you already computed earlier
-cgga693_meta_gbm_ord <- cgga693_meta_gbm %>%
-  dplyr::filter(CGGA_ID %in% gsub("_693$", "", merged_samples)) %>% 
-  dplyr::slice(match(gsub("_693$", "", merged_samples), CGGA_ID))
-
-cgga325_meta_gbm_ord <- cgga325_meta_gbm %>%
-  dplyr::filter(CGGA_ID %in% gsub("_325$", "", merged_samples)) %>% 
-  dplyr::slice(match(gsub("_325$", "", merged_samples), CGGA_ID))
-
-# Base meta frames
-meta693 <- cgga693_meta_gbm %>%
+# Base meta frames (Group/Cohort)
+meta693 <- cgga693_meta %>%
   dplyr::transmute(
     sample_id = CGGA_ID,
     group  = dplyr::if_else(tolower(Histology) == "rgbm", "rGBM", "GBM"),
     cohort = "CGGA693"
   )
 
-meta325 <- cgga325_meta_gbm %>%
+meta325 <- cgga325_meta %>%
   dplyr::transmute(
     sample_id = CGGA_ID,
     group  = dplyr::if_else(tolower(Histology) == "rgbm", "rGBM", "GBM"),
@@ -314,21 +314,24 @@ metaCTL <- tibble::tibble(
   cohort = "Control"
 )
 
+# Helper: append suffix ONLY if present in merged sample IDs
 add_suffix_if_needed <- function(df, suffix) {
   needs_suffix <- any(grepl(paste0(suffix, "$"), merged_samples))
   if (needs_suffix) df$sample_id <- paste0(df$sample_id, suffix)
   df
 }
+
 meta693 <- add_suffix_if_needed(meta693, "_693")
 meta325 <- add_suffix_if_needed(meta325, "_325")
 metaCTL <- add_suffix_if_needed(metaCTL, "_CTRL")
 
+# Combine base meta and keep only samples that exist in merged expression
 sample_meta_all <- dplyr::bind_rows(meta693, meta325, metaCTL) %>%
   dplyr::filter(sample_id %in% merged_samples) %>%
   dplyr::distinct(sample_id, .keep_all = TRUE)
 
-# Add radio/chemo columns
-meta693_extra <- cgga693_meta_gbm %>%
+# Add radio/chemo
+meta693_extra <- cgga693_meta %>%
   dplyr::select(
     CGGA_ID,
     `Radio_status (treated=1;un-treated=0)`,
@@ -340,7 +343,7 @@ meta693_extra <- cgga693_meta_gbm %>%
     Chemo_status = `Chemo_status (TMZ treated=1;un-treated=0)`
   ) %>% add_suffix_if_needed("_693")
 
-meta325_extra <- cgga325_meta_gbm %>%
+meta325_extra <- cgga325_meta %>%
   dplyr::select(
     CGGA_ID,
     `Radio_status (treated=1;un-treated=0)`,
@@ -358,11 +361,40 @@ metaCTL_extra <- tibble::tibble(
   Chemo_status = NA_integer_
 ) %>% add_suffix_if_needed("_CTRL")
 
-sample_meta_all <- sample_meta_all %>%
-  dplyr::left_join(dplyr::bind_rows(meta693_extra, meta325_extra, metaCTL_extra),
-                   by = "sample_id")
+# ---- NEW: bring in survival (OS_days, OS_event) ----
+surv693 <- cgga693_meta %>%
+  dplyr::transmute(
+    sample_id = CGGA_ID,
+    OS_days   = suppressWarnings(as.numeric(OS)),
+    OS_event  = suppressWarnings(as.numeric(`Censor (alive=0; dead=1)`))
+  ) %>% add_suffix_if_needed("_693")
 
+surv325 <- cgga325_meta %>%
+  dplyr::transmute(
+    sample_id = CGGA_ID,
+    OS_days   = suppressWarnings(as.numeric(OS)),
+    OS_event  = suppressWarnings(as.numeric(`Censor (alive=0; dead=1)`))
+  ) %>% add_suffix_if_needed("_325")
+
+survCTL <- tibble::tibble(
+  sample_id = ctl_ids,
+  OS_days   = NA_real_,
+  OS_event  = NA_real_
+) %>% add_suffix_if_needed("_CTRL")
+
+# Merge everything into sample_meta_all
+sample_meta_all <- sample_meta_all %>%
+  dplyr::left_join(dplyr::bind_rows(meta693_extra, meta325_extra, metaCTL_extra), by = "sample_id") %>%
+  dplyr::left_join(dplyr::bind_rows(surv693, surv325, survCTL), by = "sample_id")
+
+# Sanity checks
 stopifnot(setequal(sample_meta_all$sample_id, merged_samples))
+message("Survival rows with data: ", sum(!is.na(sample_meta_all$OS_days)), 
+        " | events present: ", sum(!is.na(sample_meta_all$OS_event)))
+
+# (Optional) a convenience in years for plotting tables
+sample_meta_all <- sample_meta_all %>%
+  dplyr::mutate(OS_years = ifelse(!is.na(OS_days), OS_days / 365.25, NA_real_))
 
 ```
 
@@ -472,6 +504,196 @@ ggplot(df_a, aes(PC1, PC2, color = group, shape = cohort)) +
   theme(panel.grid.minor = element_blank(), legend.position = "top")
 
 ```
+
+### DEG Analysis pre-Gene list
+
+#### Volcano
+
+```{r}
+# ---- Volcano (ALL genes) — rGBM vs Control ----
+# Needs: expr_adj_all (genes x samples, batch-adjusted log2(FPKM+1))
+#        sample_meta_all (columns: sample_id, group with "Control" and "rGBM")
+
+stopifnot(exists("expr_adj_all"), exists("sample_meta_all"))
+stopifnot(all(colnames(expr_adj_all) == sample_meta_all$sample_id))
+
+# 1) Subset to rGBM + Control and design (Control baseline)
+idx_keep <- which(sample_meta_all$group %in% c("Control","rGBM"))
+stopifnot(length(idx_keep) > 1)
+
+expr_rc <- expr_adj_all[, idx_keep, drop = FALSE]
+meta_rc <- sample_meta_all[idx_keep, , drop = FALSE]
+meta_rc$group <- factor(meta_rc$group, levels = c("Control","rGBM"))
+
+design  <- model.matrix(~ 0 + group, data = meta_rc)
+colnames(design) <- levels(meta_rc$group)
+contrast <- limma::makeContrasts(rGBM_vs_Control = rGBM - Control, levels = design)
+
+# 2) Limma on ALL genes
+fit  <- limma::lmFit(expr_rc, design)
+fit2 <- limma::eBayes(limma::contrasts.fit(fit, contrast))
+res  <- limma::topTable(fit2, coef = "rGBM_vs_Control", number = Inf, adjust.method = "BH")
+
+res_tbl <- res %>%
+  tibble::rownames_to_column("gene") %>%
+  dplyr::select(gene, logFC, AveExpr, t, P.Value, adj.P.Val, B)
+
+# 3) Prep volcano data (ALL genes; no filtering)
+volc_df <- res_tbl %>%
+  transmute(
+    gene,
+    lfc      = logFC,
+    padj     = adj.P.Val,
+    neglog10 = -log10(adj.P.Val)
+  )
+
+# 4) Thresholds and status
+padj_cut <- 0.05
+lfc_cut  <- 1.0
+
+volc_df <- volc_df %>%
+  mutate(status = case_when(
+    padj < padj_cut & lfc >  lfc_cut ~ "Up",
+    padj < padj_cut & lfc < -lfc_cut ~ "Down",
+    TRUE                             ~ "NS"
+  ))
+
+# Labels: top 20 by |lfc| (feel free to change n)
+labs <- volc_df %>%
+  arrange(desc(abs(lfc))) %>%
+  slice_head(n = 20) %>%
+  pull(gene)
+
+# 5) Plot
+p_volc_all <- ggplot(volc_df, aes(x = lfc, y = neglog10)) +
+  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
+  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
+  geom_hline(yintercept = -log10(padj_cut), linetype = 2, linewidth = 0.3) +
+  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
+  ggrepel::geom_text_repel(
+    data = subset(volc_df, gene %in% labs),
+    aes(label = gene),
+    max.overlaps = Inf,
+    box.padding = 0.35,
+    point.padding = 0.2,
+    min.segment.length = 0,
+    seed = 123
+  ) +
+  labs(
+    title = "All genes: rGBM vs Control (batch-adjusted, limma on ALL genes)",
+    subtitle = "Contrast = rGBM − Control",
+    x = expression(log[2]~fold~change),
+    y = expression(-log[10]~adjusted~p~value)
+  ) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(),
+         panel.border = element_blank()
+  )
+
+print(p_volc_all)
+
+# 6) Save outputs
+outdir <- "/Data/Outputs/All_DEG"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+ggsave(file.path(outdir, "Volcano_AllGenes_rGBM_vs_Control_batchAdj.pdf"),
+       p_volc_all, width = 6.8, height = 5.6, units = "in", device = cairo_pdf)
+
+# Save the plot data and full DE table
+write_csv(volc_df, file.path(outdir, "Volcano_AllGenes_rGBM_vs_Control_plotdata.csv"))
+write_csv(res_tbl, file.path(outdir, "DE_full_rGBM_vs_Control_allgenes_batchAdj.csv"))
+
+# (Optional) quick counts for your notes
+table(volc_df$status)
+
+```
+#### GSEA
+
+```{r}
+# 1) Load your saved DE results
+res_tbl <- read_csv("/Data/Outputs/All_DEG/DE_full_rGBM_vs_Control_allgenes_batchAdj.csv",
+                    show_col_types = FALSE)
+
+# 2) Map SYMBOL → ENTREZ (required for gseGO)
+sym2ent <- bitr(res_tbl$gene, fromType = "SYMBOL",
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+# 3) Join with DE results, keep unique ENTREZ
+rank_df <- res_tbl %>%
+  inner_join(sym2ent, by = c("gene" = "SYMBOL")) %>%
+  distinct(ENTREZID, .keep_all = TRUE)
+
+# 4) Build ranked vector (t-statistic works well)
+ranks <- rank_df$t
+names(ranks) <- rank_df$ENTREZID
+ranks <- sort(ranks, decreasing = TRUE)
+
+# Now ranks exists and you can continue
+head(ranks)
+
+```
+
+
+```{r}
+# ranks: named numeric vector (ENTREZ -> t-stat)
+stopifnot(exists("ranks"))
+ranks <- sort(ranks, decreasing = TRUE)
+
+set.seed(1234)
+
+# 1) GSEA without internal filtering
+ego_full <- gseGO(
+  geneList      = ranks,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "ENTREZID",
+  ont           = "BP",
+  pAdjustMethod = "none",  # return raw p-values
+  pvalueCutoff  = 1,       # keep everything
+  minGSSize     = 10,
+  maxGSSize     = 5000,
+  verbose       = FALSE
+)
+
+# 2) Recompute BH FDR + prep table
+df <- as.data.frame(ego_full) %>%
+  dplyr::mutate(
+    padj     = p.adjust(pvalue, method = "BH"),
+    padj_eps = pmax(padj, .Machine$double.xmin)  # avoid zeros for plotting
+  )
+
+
+# Keep only positive NES, sort by NES desc, take top 5
+topN  <- 6
+df_top <- df %>%
+  dplyr::filter(NES > 0) %>%
+  dplyr::arrange(dplyr::desc(NES)) %>%
+  dplyr::slice_head(n = topN)
+
+if (nrow(df_top) == 0) stop("No positively enriched pathways (NES > 0).")
+
+# Bar plot version
+p_nes <- ggplot(df_top, aes(x = NES, y = reorder(Description, NES))) +
+  geom_col(fill = "steelblue3", width = 0.7) +
+  labs(x = "Normalized Enrichment Score (NES)", y = NULL,
+       title = "GO BP GSEA — rGBM vs Control (Top 6 positive NES)") +
+  theme_bw(base_size = 11) +
+  theme(panel.border = element_blank())
+
+print(p_nes)
+```
+```{r}
+outdir <- "/Data/Outputs/All_DEG"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+ggsave(file.path(outdir, "GSEA_GO_BP_rGBM_vs_Control_Top20_PosNES_barplot.pdf"),
+       p_nes, width = 7, height = 5, device = cairo_pdf)
+
+readr::write_csv(df_top,
+                 file.path(outdir, "GSEA_GO_BP_rGBM_vs_Control_Top20_PosNES_table.csv"))
+```
+
+
+
 ### Apply GO ECM gene list
 ```{r}
 
@@ -505,212 +727,259 @@ expr_adj_ecm_long <- expr_adj_ecm %>%
 
 ```
 
-### DEG analysis
 
-#### Compare DEG between control, GBM, and rGBM.
+### DEG analysis post-Gene List ECM 
 
-##### Prepare meta data
+#### Heatmap
 
 ```{r}
-# ECM matrix to analyze (genes x samples)
-Y_ecm <- expr_adj_ecm
+# --- STEP 1: Prep ECM heatmap inputs (matrix + annotations) ---
 
-# Build sample_meta exactly in the column order of Y_ecm
-sample_meta <- sample_meta_all %>%
-  dplyr::slice(match(colnames(Y_ecm), sample_id))
+stopifnot(exists("expr_adj_ecm"), exists("sample_meta_all"))
+stopifnot(all(colnames(expr_adj_ecm) == sample_meta_all$sample_id))
 
-stopifnot(identical(sample_meta$sample_id, colnames(Y_ecm)))
+# 1) Keep genes with some variance
+gene_var <- apply(expr_adj_ecm, 1, var, na.rm = TRUE)
+keep     <- gene_var > 0
+mat_ecm  <- expr_adj_ecm[keep, , drop = FALSE]
 
-# Set factor order
-sample_meta$group <- factor(sample_meta$group, levels = c("Control", "GBM", "rGBM"))
+# 2) (Optional) Limit to top variable ECM genes for readability
+top_var_n <- 150   # <- change if you want more/less genes
+ord <- order(gene_var[keep], decreasing = TRUE)
+if (length(ord) > top_var_n) ord <- ord[seq_len(top_var_n)]
+mat_ecm <- mat_ecm[ord, , drop = FALSE]
+
+# 3) Row-scale (Z-score) to emphasize relative patterns across samples
+row_zscore <- function(x) {
+  mu <- rowMeans(x, na.rm = TRUE)
+  sd <- apply(x, 1, sd, na.rm = TRUE)
+  sweep(sweep(x, 1, mu, "-"), 1, pmax(sd, .Machine$double.eps), "/")
+}
+H_ecm <- row_zscore(mat_ecm)
+
+# 4) Column annotations (Group, Cohort, Radio/Chemo labels)
+ann_col <- sample_meta_all |>
+  dplyr::transmute(
+    sample_id,
+    Group   = factor(group,  levels = c("Control","GBM","rGBM")),
+    Cohort  = factor(cohort, levels = c("Control","CGGA693","CGGA325")),
+    Radio   = dplyr::case_when(Radio_status == 1 ~ "Treated",
+                               Radio_status == 0 ~ "Untreated",
+                               TRUE ~ NA_character_),
+    Chemo   = dplyr::case_when(Chemo_status == 1 ~ "TMZ Treated",
+                               Chemo_status == 0 ~ "Untreated",
+                               TRUE ~ NA_character_)
+  ) |>
+  tibble::column_to_rownames("sample_id")
+
+# ensure order matches columns of H_ecm
+ann_col <- ann_col[colnames(H_ecm), , drop = FALSE]
+
+# 5) Quick sanity prints
+cat("ECM heatmap matrix dims (genes x samples):", nrow(H_ecm), "x", ncol(H_ecm), "\n")
+table(ann_col$Group)
+table(ann_col$Cohort)
+
+# Objects created for next step:
+# - H_ecm: row-scaled matrix (genes x samples)
+# - ann_col: data.frame for column annotations (rows = samples)
 
 ```
-
-Build design matrix and contrasts
 ```{r}
+# --- STEP 2 (simplified): rGBM vs Control heatmap with Group + Cohort only ---
 
-design <- model.matrix(~ 0 + group, data = sample_meta)
-colnames(design) <- levels(sample_meta$group)
+stopifnot(exists("H_ecm"), exists("ann_col"))
 
-contrast_matrix <- makeContrasts(
-  GBM_vs_Control  = GBM - Control,
-  rGBM_vs_Control = rGBM - Control,
-  rGBM_vs_GBM     = rGBM - GBM,
-  levels = design
+# 1) Keep only Control and rGBM samples
+keep_cols <- rownames(ann_col)[ann_col$Group %in% c("Control","rGBM")]
+H_ecm_rg_ctl <- H_ecm[, keep_cols, drop = FALSE]
+
+# 2) Keep only Group and Cohort for annotations
+ann_rg_ctl <- ann_col[keep_cols, c("Group","Cohort"), drop = FALSE]
+
+# 3) Color mapping
+ann_colors <- list(
+  Group  = c(Control = "grey40", rGBM = "#d62728"),
+  Cohort = c(Control = "grey60", CGGA693 = "#6baed6", CGGA325 = "#9ecae1")
 )
 
-```
+# 4) Heatmap
+outdir_hm <- "/Data/Outputs/ECM_DEG"
+if (!dir.exists(outdir_hm)) dir.create(outdir_hm, recursive = TRUE)
 
-Run Limma
-```{r}
-fit  <- lmFit(Y_ecm, design)
-fit2 <- contrasts.fit(fit, contrast_matrix)
-fit2 <- eBayes(fit2)
+col_grad <- colorRampPalette(c("#1f77b4", "white", "#d62728"))(101)
+brks     <- seq(-3, 3, length.out = 101)
 
-deg_GBM_vs_Control  <- topTable(fit2, coef = "GBM_vs_Control",  number = Inf, adjust.method = "BH")
-deg_rGBM_vs_Control <- topTable(fit2, coef = "rGBM_vs_Control", number = Inf, adjust.method = "BH")
-deg_rGBM_vs_GBM     <- topTable(fit2, coef = "rGBM_vs_GBM",     number = Inf, adjust.method = "BH")
+pdf(file.path(outdir_hm, "ECM_Heatmap_rGBM_vs_Control.pdf"),
+    width = 9, height = 7, useDingbats = FALSE)
 
-```
+pheatmap::pheatmap(
+  H_ecm_rg_ctl,
+  color              = col_grad,
+  breaks             = brks,
+  annotation_col     = ann_rg_ctl,
+  annotation_colors  = ann_colors,
+  cluster_rows       = TRUE,
+  cluster_cols       = TRUE,
+  clustering_method  = "ward.D2",
+  show_colnames      = FALSE,
+  fontsize_row       = 6,
+  border_color       = NA,
+  main               = "ECM genes (row Z-score): rGBM vs Control"
+)
 
-Save the .csv
-
-```{r}
-write.csv(deg_GBM_vs_Control,  "/Data/Outputs/DEG_GBM_vs_Control.csv",  row.names = TRUE)
-write.csv(deg_rGBM_vs_Control, "/Data/Outputs/DEG_rGBM_vs_Control.csv", row.names = TRUE)
-write.csv(deg_rGBM_vs_GBM,     "/Data/Outputs/DEG_rGBM_vs_GBM.csv",     row.names = TRUE)
-
-```
-
-##### Plot Volcano 
-
-```{r}
-# your make_volcano() is good as-is
-p1 <- make_volcano(deg_GBM_vs_Control,  title = "GBM vs Control",  label_n_each = 10)
-p2 <- make_volcano(deg_rGBM_vs_Control, title = "rGBM vs Control", label_n_each = 10)
-p3 <- make_volcano(deg_rGBM_vs_GBM,     title = "rGBM vs GBM",     label_n_each = 10)
-
-p3_adj <- make_volcano(deg_rGBM_vs_GBM, title = "rGBM vs GBM", lfc_cut = 0.25, label_n_each = 10)
-
-p1; p2; p3; p3_adj
-
-```
-```{r}
-ggsave("/Data/Outputs/Volcano_GBM_vs_Control.pdf",           plot = p1,     width = 6, height = 5, units = "in", device = cairo_pdf)
-ggsave("/Data/Outputs/Volcano_rGBM_vs_Control.pdf",          plot = p2,     width = 6, height = 5, units = "in", device = cairo_pdf)
-ggsave("/Data/Outputs/Volcano_rGBM_vs_GBM.pdf",              plot = p3,     width = 6, height = 5, units = "in", device = cairo_pdf)
-ggsave("/Data/Outputs/Volcano_rGBM_vs_GBM_adjfc.pdf",        plot = p3_adj, width = 6, height = 5, units = "in", device = cairo_pdf)
-
-```
-
-##### Sample counts
-```{r}
-cat("\n=== Overall samples by group (ECM set) ===\n")
-print(table(sample_meta$group, useNA = "ifany"))
-
-print_pair_counts <- function(g1, g2, label = NULL) {
-  keep <- sample_meta$group %in% c(g1, g2)
-  sub  <- droplevels(sample_meta[keep, , drop = FALSE])
-  ttl  <- if (is.null(label)) paste(g1, "vs", g2) else label
-  cat("\n---", ttl, "---\n")
-  print(table(sub$group, useNA = "ifany"))
-}
-
-print_pair_counts("GBM",  "Control", label = "GBM vs Control")
-print_pair_counts("rGBM", "Control", label = "rGBM vs Control")
-print_pair_counts("rGBM", "GBM",     label = "rGBM vs GBM")
-
-```
-
-
-
-#### Compare DEG using Chemo and Radio status
-
-```{r}
-run_simple_deg <- function(group_filter, status_col, status_labels,
-                           csv_path, volcano_title, pdf_path,
-                           lfc_cut = 0.25, label_n_each = 10) {
-
-  # subset to desired tumor group & status present
-  idx <- which(sample_meta_all$group == group_filter & !is.na(sample_meta_all[[status_col]]))
-  stopifnot(length(idx) > 1)
-
-  Y   <- expr_adj_ecm[, idx, drop = FALSE]         # <-- ECM matrix
-  sm  <- sample_meta_all[idx, , drop = FALSE]
-
-  # factor for treatment
-  sm[[status_col]] <- factor(sm[[status_col]], levels = c(0,1), labels = status_labels)
-
-  # design + contrast
-  design <- model.matrix(~ 0 + sm[[status_col]])
-  colnames(design) <- status_labels
-  contrast <- makeContrasts(contrasts = paste0(status_labels[2], " - ", status_labels[1]), levels = design)
-
-  # limma
-  fit  <- lmFit(Y, design)
-  fit2 <- eBayes(contrasts.fit(fit, contrast))
-  deg  <- topTable(fit2, coef = 1, number = Inf, adjust.method = "BH")
-
-  # write + volcano
-  write.csv(deg, csv_path, row.names = TRUE)
-  p <- make_volcano(deg, title = volcano_title, lfc_cut = lfc_cut, label_n_each = label_n_each)
-  ggsave(pdf_path, plot = p, width = 6, height = 5, units = "in")
-
-  return(p)
-}
- 
+dev.off()
 
 ```
 
 
 ```{r}
-p_gbm_chemo <- run_simple_deg("GBM",  "Chemo_status", c("NoChemo", "Chemo"),
-                              "/Data/Outputs/DEG_GBM_Chemo_vs_NoChemo.csv",
-                              "GBM: Chemo vs No-Chemo",
-                              "/Data/Outputs/Volcano_GBM_Chemo_vs_NoChemo.pdf")
+# --- STEP 2b: Make gene labels readable ---
 
-p_gbm_radio <- run_simple_deg("GBM",  "Radio_status", c("NoRadio", "Radio"),
-                              "/Data/Outputs/DEG_GBM_Radio_vs_NoRadio.csv",
-                              "GBM: Radio vs No-Radio",
-                              "/Data/Outputs/Volcano_GBM_Radio_vs_NoRadio.pdf")
+stopifnot(exists("H_ecm"), exists("ann_col"))
 
-p_rgbm_chemo <- run_simple_deg("rGBM", "Chemo_status", c("NoChemo", "Chemo"),
-                               "/Data/Outputs/DEG_rGBM_Chemo_vs_NoChemo.csv",
-                               "rGBM: Chemo vs No-Chemo",
-                               "/Data/Outputs/Volcano_rGBM_Chemo_vs_NoChemo.pdf")
+# Use the same rGBM vs Control subset as before
+keep_cols <- rownames(ann_col)[ann_col$Group %in% c("Control","rGBM")]
+H_ecm_rg_ctl <- H_ecm[, keep_cols, drop = FALSE]
+ann_rg_ctl   <- ann_col[keep_cols, c("Group","Cohort"), drop = FALSE]
 
-p_rgbm_radio <- run_simple_deg("rGBM", "Radio_status", c("NoRadio", "Radio"),
-                               "/Data/Outputs/DEG_rGBM_Radio_vs_NoRadio.csv",
-                               "rGBM: Radio vs No-Radio",
-                               "/Data/Outputs/Volcano_rGBM_Radio_vs_NoRadio.pdf")
+ann_colors <- list(
+  Group  = c(Control = "grey40", rGBM = "#d62728"),
+  Cohort = c(Control = "grey60", CGGA693 = "#6baed6", CGGA325 = "#9ecae1")
+)
+
+col_grad <- colorRampPalette(c("#1f77b4", "white", "#d62728"))(101)
+brks     <- seq(-3, 3, length.out = 101)
+
+# Dynamically scale PDF height and font size to the number of genes
+n_genes       <- nrow(H_ecm_rg_ctl)
+pdf_height_in <- min(60, max(7, n_genes * 0.18))  # cap at 60"
+fs_row        <- ifelse(n_genes <= 60, 9,
+                     ifelse(n_genes <= 120, 7,
+                       ifelse(n_genes <= 200, 6, 5)))
+
+outdir_hm <- "/Data/Outputs/ECM_DEG"
+if (!dir.exists(outdir_hm)) dir.create(outdir_hm, recursive = TRUE)
+
+pdf(file.path(outdir_hm, "ECM_Heatmap_rGBM_vs_Control_readableLabels.pdf"),
+    width = 10, height = pdf_height_in, useDingbats = FALSE)
+
+pheatmap::pheatmap(
+  H_ecm_rg_ctl,
+  color              = col_grad,
+  breaks             = brks,
+  annotation_col     = ann_rg_ctl,
+  annotation_colors  = ann_colors,
+  cluster_rows       = TRUE,
+  cluster_cols       = TRUE,
+  clustering_method  = "ward.D2",
+  show_colnames      = FALSE,
+  show_rownames      = TRUE,      # <- ensure row (gene) labels are drawn
+  fontsize_row       = fs_row,    # <- larger font for readability
+  fontsize_col       = 6,
+  border_color       = NA,
+  main               = "ECM genes (row Z-score): rGBM vs Control"
+)
+dev.off()
+
+cat("Saved heatmap with readable labels to:\n",
+    file.path(outdir_hm, "ECM_Heatmap_rGBM_vs_Control_readableLabels.pdf"), "\n",
+    "Genes:", n_genes, " | PDF height (in):", round(pdf_height_in, 1), 
+    " | fontsize_row:", fs_row, "\n")
 
 ```
+#### Volcano
 
 ```{r}
+# --- Volcano: ECM genes, rGBM vs Control ---
+
+stopifnot(exists("expr_adj_ecm"), exists("sample_meta_all"))
+stopifnot(all(colnames(expr_adj_ecm) == sample_meta_all$sample_id))
+
+# 1) Subset to rGBM + Control
+keep <- sample_meta_all$group %in% c("Control","rGBM")
+X    <- expr_adj_ecm[, keep, drop = FALSE]
+mta  <- droplevels(sample_meta_all[keep, ])
+mta$group <- factor(mta$group, levels = c("Control","rGBM"))
+
+# 2) limma (Control baseline)
+design   <- model.matrix(~ 0 + group, data = mta)
+colnames(design) <- levels(mta$group)
+contrast <- limma::makeContrasts(rGBM_vs_Control = rGBM - Control, levels = design)
+
+fit  <- limma::lmFit(X, design)
+fit2 <- limma::eBayes(limma::contrasts.fit(fit, contrast))
+res  <- limma::topTable(fit2, coef = "rGBM_vs_Control", number = Inf, adjust.method = "BH") |>
+  tibble::rownames_to_column("gene") |>
+  dplyr::select(gene, logFC, AveExpr, t, P.Value, adj.P.Val, B)
+
+# 3) Prep data
 padj_cut <- 0.05
-lfc_cut  <- 1
+lfc_cut  <- 0.5      # ECM effects can be modest; tweak if desired
 
-read_deg <- function(path) {
-  df <- readr::read_csv(path, show_col_types = FALSE)
-  # First column is rownames from write.csv; catch either ...1 or first unnamed:
-  if ("...1" %in% names(df)) {
-    df <- dplyr::rename(df, gene = `...1`)
-  } else if (names(df)[1] != "gene") {
-    names(df)[1] <- "gene"
-  }
-  df %>% dplyr::rename(log2FC = logFC, padj = adj.P.Val)
-}
+volc_df <- res |>
+  dplyr::transmute(
+    gene,
+    lfc      = logFC,
+    padj     = adj.P.Val,
+    neglog10 = -log10(adj.P.Val),
+    status   = dplyr::case_when(
+      adj.P.Val < padj_cut & logFC >  lfc_cut ~ "Up",
+      adj.P.Val < padj_cut & logFC < -lfc_cut ~ "Down",
+      TRUE                                    ~ "NS"
+    )
+  )
 
-rgbm_df <- read_deg("/Data/Outputs/DEG_rGBM_vs_Control.csv")
-gbm_df  <- read_deg("/Data/Outputs/DEG_GBM_vs_Control.csv")
+# Label top genes by |lfc|
+labs <- volc_df |>
+  dplyr::arrange(dplyr::desc(abs(lfc))) |>
+  dplyr::slice_head(n = 20) |>
+  dplyr::pull(gene)
 
-rgbm_sig <- rgbm_df %>% dplyr::filter(padj < padj_cut, abs(log2FC) > lfc_cut) %>% dplyr::arrange(padj)
-gbm_sig  <- gbm_df  %>% dplyr::filter(padj < padj_cut, abs(log2FC) > lfc_cut) %>% dplyr::arrange(padj)
+# 4) Plot
+p_volc <- ggplot(volc_df, aes(x = lfc, y = neglog10)) +
+  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
+  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
+  geom_hline(yintercept = -log10(padj_cut), linetype = 2, linewidth = 0.3) +
+  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
+  ggrepel::geom_text_repel(
+    data = subset(volc_df, gene %in% labs),
+    aes(label = gene),
+    max.overlaps = Inf,
+    box.padding = 0.35,
+    point.padding = 0.2,
+    min.segment.length = 0,
+    seed = 123
+  ) +
+  labs(
+    title    = "ECM genes: rGBM vs Control",
+    subtitle = "limma on batch-adjusted log2(FPKM+1) | Contrast = rGBM − Control",
+    x = expression(log[2]~fold~change),
+    y = expression(-log[10]~adjusted~p~value)
+  ) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(),
+        panel.border = element_blank())
 
-rgbm_up   <- rgbm_sig %>% dplyr::filter(log2FC > 0)
-rgbm_down <- rgbm_sig %>% dplyr::filter(log2FC < 0)
-gbm_up    <- gbm_sig  %>% dplyr::filter(log2FC > 0)
-gbm_down  <- gbm_sig  %>% dplyr::filter(log2FC < 0)
+print(p_volc)
 
-cat("rGBM vs Control: ", nrow(rgbm_up), " up, ", nrow(rgbm_down), " down\n", sep = "")
-cat("GBM  vs Control: ", nrow(gbm_up),  " up, ", nrow(gbm_down),  " down\n",  sep = "")
+# 5) Save outputs
+outdir <- "/Data/Outputs/ECM_DEG"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
 
-cat("\n--- rGBM vs Control ---\nUpregulated:\n"); print(rgbm_up$gene)
-cat("\nDownregulated:\n");                print(rgbm_down$gene)
-cat("\n--- GBM vs Control ---\nUpregulated:\n"); print(gbm_up$gene)
-cat("\nDownregulated:\n");                print(gbm_down$gene)
+ggsave(file.path(outdir, "Volcano_ECM_rGBM_vs_Control.pdf"),
+       p_volc, width = 6.8, height = 5.6, units = "in", device = cairo_pdf)
 
-readr::write_csv(rgbm_up,   "/Data/Outputs/DEG_rGBM_vs_Control_up.csv")
-readr::write_csv(rgbm_down, "/Data/Outputs/DEG_rGBM_vs_Control_down.csv")
-readr::write_csv(gbm_up,    "/Data/Outputs/DEG_GBM_vs_Control_up.csv")
-readr::write_csv(gbm_down,  "/Data/Outputs/DEG_GBM_vs_Control_down.csv")
+readr::write_csv(volc_df, file.path(outdir, "Volcano_ECM_rGBM_vs_Control_plotdata.csv"))
+readr::write_csv(res,     file.path(outdir, "DE_full_ECM_rGBM_vs_Control.csv"))
 
-readr::write_lines(rgbm_up$gene,   "/Data/Outputs/DEG_rGBM_vs_Control_up_genes.txt")
-readr::write_lines(rgbm_down$gene, "/Data/Outputs/DEG_rGBM_vs_Control_down_genes.txt")
-readr::write_lines(gbm_up$gene,    "/Data/Outputs/DEG_GBM_vs_Control_up_genes.txt")
-readr::write_lines(gbm_down$gene,  "/Data/Outputs/DEG_GBM_vs_Control_down_genes.txt")
+# Quick counts for the log
+print(table(volc_df$status))
 
 ```
+
+
+
 
 ### Gene specific analysis
 
@@ -984,6 +1253,126 @@ write_csv(group_means, "/Data/Outputs/TwoGene_GroupMeans_MMP2_MMP9.csv")
 group_means
 
 ```
+### Outcome Analysis
+
+```{r}
+
+```
+
+```{r}
+# --- STEP 2: Add survival info back into sample_meta_all ---
+
+# Clean survival columns and unify naming
+clean_surv <- function(df, suffix) {
+  df |>
+    dplyr::transmute(
+      sample_id = paste0(CGGA_ID, suffix),
+      OS_days   = as.numeric(OS),
+      OS_event  = as.numeric(`Censor (alive=0; dead=1)`)
+    )
+}
+
+surv693 <- clean_surv(cgga693_clin, "_693")
+surv325 <- clean_surv(cgga325_clin, "_325")
+
+# Merge with sample_meta_all
+sample_meta_surv <- sample_meta_all |>
+  dplyr::left_join(dplyr::bind_rows(surv693, surv325), by = "sample_id")
+
+# Quick check
+summary(sample_meta_surv$OS_days)
+table(sample_meta_surv$OS_event, useNA = "ifany")
+
+```
+
+#### COL1A1
+
+```{r}
+# --- KM analysis for COL1A1 ---
+gene <- "COL1A1"
+stopifnot(gene %in% rownames(expr_adj_all))
+
+# Expression vector
+expr_vec <- expr_adj_all[gene, ]
+
+# Build df with survival + expression
+df_km <- data.frame(
+  sample_id = names(expr_vec),
+  expr      = as.numeric(expr_vec)
+) %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::filter(!is.na(OS_days), !is.na(OS_event))
+
+# Median split
+cutoff <- median(df_km$expr, na.rm = TRUE)
+df_km$expr_group <- ifelse(df_km$expr >= cutoff, "High", "Low")
+
+# Survival object
+surv_obj <- Surv(time = df_km$OS_days, event = df_km$OS_event)
+
+# KM fit
+fit <- survfit(surv_obj ~ expr_group, data = df_km)
+
+# Plot
+ggsurvplot(
+  fit,
+  data       = df_km,
+  pval       = TRUE,
+  risk.table = TRUE,
+  palette    = c("Low" = "#1f77b4", "High" = "#d62728"),
+  legend.labs = c("Low COL1A1", "High COL1A1"),
+  title      = "Overall Survival by COL1A1 Expression",
+  xlab       = "Time (days)",
+  ylab       = "Survival Probability"
+)
+
+```
+
+#### COL3A1
+
+```{r}
+# --- KM analysis for COL3A1 ---
+
+gene <- "COL3A1"
+stopifnot(gene %in% rownames(expr_adj_all))
+
+# Expression vector
+expr_vec <- expr_adj_all[gene, ]
+
+# Build df with survival + expression
+df_km <- data.frame(
+  sample_id = names(expr_vec),
+  expr      = as.numeric(expr_vec)
+) %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::filter(!is.na(OS_days), !is.na(OS_event))
+
+# Median split
+cutoff <- median(df_km$expr, na.rm = TRUE)
+df_km$expr_group <- ifelse(df_km$expr >= cutoff, "High", "Low")
+
+# Survival object
+surv_obj <- Surv(time = df_km$OS_days, event = df_km$OS_event)
+
+# KM fit
+fit <- survfit(surv_obj ~ expr_group, data = df_km)
+
+# Plot
+ggsurvplot(
+  fit,
+  data       = df_km,
+  pval       = TRUE,
+  risk.table = TRUE,
+  palette    = c("Low" = "#1f77b4", "High" = "#d62728"),
+  legend.labs = c("Low COL3A1", "High COL3A1"),
+  title      = "Overall Survival by COL3A1 Expression",
+  xlab       = "Time (days)",
+  ylab       = "Survival Probability"
+)
+
+```
+
+
 
 ## GeoMx Data
 
