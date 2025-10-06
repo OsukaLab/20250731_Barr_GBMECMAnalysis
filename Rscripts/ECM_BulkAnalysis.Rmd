@@ -888,6 +888,101 @@ cat("Saved heatmap with readable labels to:\n",
     " | fontsize_row:", fs_row, "\n")
 
 ```
+
+##### Only Collagen Heatmap
+
+```{r}
+# --- STEP 1: Build collagen-only matrix for heatmap ---
+
+stopifnot(exists("expr_adj_ecm"), exists("sample_meta_all"))
+
+# 1) Select only collagen genes (prefix "COL")
+collagen_genes <- grep("^COL", rownames(expr_adj_ecm), value = TRUE)
+length(collagen_genes)
+
+# 2) Subset and row-scale (Z-score per gene)
+expr_collagen <- expr_adj_ecm[collagen_genes, , drop = FALSE]
+
+row_zscore <- function(x) {
+  mu <- rowMeans(x, na.rm = TRUE)
+  sd <- apply(x, 1, sd, na.rm = TRUE)
+  sweep(sweep(x, 1, mu, "-"), 1, pmax(sd, .Machine$double.eps), "/")
+}
+H_collagen <- row_zscore(expr_collagen)
+
+# 3) Keep only Control and rGBM samples
+keep_cols <- sample_meta_all$sample_id[sample_meta_all$group %in% c("Control","rGBM")]
+H_collagen <- H_collagen[, keep_cols, drop = FALSE]
+
+# 4) Minimal annotation (Group + Cohort)
+ann_col <- sample_meta_all %>%
+  dplyr::filter(sample_id %in% keep_cols) %>%
+  dplyr::transmute(
+    sample_id,
+    Group  = factor(group,  levels = c("Control","rGBM")),
+    Cohort = factor(cohort, levels = c("Control","CGGA693","CGGA325"))
+  ) %>%
+  tibble::column_to_rownames("sample_id")
+
+# Quick check
+dim(H_collagen)
+table(ann_col$Group)
+
+```
+```{r}
+# --- STEP 2: Collagen-only ECM heatmap (columns ordered by phylogeny) ---
+
+stopifnot(exists("H_collagen"), exists("ann_col"))
+
+# Colors
+ann_colors <- list(
+  Group  = c(Control = "grey40", rGBM = "#d62728"),
+  Cohort = c(Control = "grey60", CGGA693 = "#6baed6", CGGA325 = "#9ecae1")
+)
+
+col_grad <- colorRampPalette(c("#1f77b4", "white", "#d62728"))(101)
+brks     <- seq(-3, 3, length.out = 101)
+
+# Dynamic sizing for readable gene labels
+n_genes       <- nrow(H_collagen)
+pdf_height_in <- min(60, max(7, n_genes * 0.18))
+fs_row        <- ifelse(n_genes <= 60, 9,
+                     ifelse(n_genes <= 120, 7,
+                       ifelse(n_genes <= 200, 6, 5)))
+
+outdir_hm <- "/Data/Outputs/ECM_DEG"
+if (!dir.exists(outdir_hm)) dir.create(outdir_hm, recursive = TRUE)
+
+pdf(file.path(outdir_hm, "ECM_Heatmap_COLLAGEN_rGBM_vs_Control_phylogenyCols.pdf"),
+    width = 10, height = pdf_height_in, useDingbats = FALSE)
+
+pheatmap::pheatmap(
+  H_collagen,
+  color                  = col_grad,
+  breaks                 = brks,
+  annotation_col         = ann_col[, c("Group","Cohort"), drop = FALSE],
+  annotation_colors      = ann_colors,
+  cluster_rows           = TRUE,            # cluster genes
+  cluster_cols           = TRUE,            # <- columns ordered by dendrogram ("phylogeny")
+  clustering_distance_cols = "euclidean",
+  clustering_method      = "ward.D2",
+  show_colnames          = FALSE,
+  show_rownames          = TRUE,
+  fontsize_row           = fs_row,
+  fontsize_col           = 6,
+  border_color           = NA,
+  main                   = "Collagen genes (row Z-score): rGBM vs Control"
+)
+
+dev.off()
+
+cat("Saved:", file.path(outdir_hm, "ECM_Heatmap_COLLAGEN_rGBM_vs_Control_phylogenyCols.pdf"),
+    "\nGenes:", n_genes, " | PDF height (in):", round(pdf_height_in, 1),
+    " | fontsize_row:", fs_row, "\n")
+
+```
+
+
 #### Volcano
 
 ```{r}
@@ -1255,122 +1350,84 @@ group_means
 ```
 ### Outcome Analysis
 
-```{r}
-
-```
+Stratify the data between above and below 12 months survival.
 
 ```{r}
-# --- STEP 2: Add survival info back into sample_meta_all ---
+# --- rGBM-only: COL1A1/COL3A1 vs 12-month survival with dots & adj p-values ---
 
-# Clean survival columns and unify naming
-clean_surv <- function(df, suffix) {
-  df |>
-    dplyr::transmute(
-      sample_id = paste0(CGGA_ID, suffix),
-      OS_days   = as.numeric(OS),
-      OS_event  = as.numeric(`Censor (alive=0; dead=1)`)
+stopifnot(exists("expr_adj_all"), exists("sample_meta_all"))
+
+# 1) rGBM-only metadata with survival
+cutoff_days <- 365.25
+meta_rgbm <- sample_meta_all %>%
+  dplyr::filter(group == "rGBM") %>%
+  dplyr::mutate(
+    surv12 = dplyr::case_when(
+      is.na(OS_days) ~ NA_character_,
+      OS_days <= cutoff_days ~ "≤12 months",
+      OS_days >  cutoff_days ~ ">12 months"
     )
-}
+  ) %>%
+  dplyr::filter(!is.na(surv12))
 
-surv693 <- clean_surv(cgga693_clin, "_693")
-surv325 <- clean_surv(cgga325_clin, "_325")
+# 2) Expression for target genes
+genes <- c("COL1A1", "COL3A1")
+genes <- intersect(genes, rownames(expr_adj_all))
+stopifnot(length(genes) > 0)
 
-# Merge with sample_meta_all
-sample_meta_surv <- sample_meta_all |>
-  dplyr::left_join(dplyr::bind_rows(surv693, surv325), by = "sample_id")
+df_expr <- expr_adj_all[genes, meta_rgbm$sample_id, drop = FALSE] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene") %>%
+  tidyr::pivot_longer(-Gene, names_to = "sample_id", values_to = "log2_expr") %>%
+  dplyr::left_join(meta_rgbm %>% dplyr::select(sample_id, surv12), by = "sample_id")
 
-# Quick check
-summary(sample_meta_surv$OS_days)
-table(sample_meta_surv$OS_event, useNA = "ifany")
+# 3) Stats: mean diff, t-test, wilcox, adjusted p-values
+stats_tbl <- df_expr %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(
+    n_le_12   = sum(surv12 == "≤12 months"),
+    n_gt_12   = sum(surv12 == ">12 months"),
+    mean_le   = mean(log2_expr[surv12 == "≤12 months"], na.rm = TRUE),
+    mean_gt   = mean(log2_expr[surv12 == ">12 months"], na.rm = TRUE),
+    diff_mean = mean_gt - mean_le,
+    t_p       = tryCatch(t.test(log2_expr ~ surv12)$p.value, error = function(e) NA_real_),
+    wilcox_p  = tryCatch(wilcox.test(log2_expr ~ surv12, exact = FALSE)$p.value, error = function(e) NA_real_)
+  ) %>%
+  dplyr::mutate(
+    p_adj_t      = p.adjust(t_p, method = "BH"),
+    p_adj_wilcox = p.adjust(wilcox_p, method = "BH")
+  )
 
-```
+print(stats_tbl)
 
-#### COL1A1
+outdir <- "/Data/Outputs/ECM_Survival"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+readr::write_csv(stats_tbl, file.path(outdir, "rGBM_COL1A1_COL3A1_by_12moSurvival_stats_withAdj.csv"))
 
-```{r}
-# --- KM analysis for COL1A1 ---
-gene <- "COL1A1"
-stopifnot(gene %in% rownames(expr_adj_all))
+# 4) Plot: boxplots + jittered dots
+p <- ggplot(df_expr, aes(x = surv12, y = log2_expr, fill = surv12)) +
+  geom_boxplot(width = 0.6, outlier.shape = NA, alpha = 0.8) +
+  geom_jitter(aes(color = surv12), width = 0.15, alpha = 0.6, size = 1.8) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  scale_fill_manual(values = c("≤12 months" = "#1f77b4", ">12 months" = "#d62728")) +
+  scale_color_manual(values = c("≤12 months" = "#1f77b4", ">12 months" = "#d62728")) +
+  labs(
+    title = "rGBM only: COL1A1 / COL3A1 expression by 12-month survival",
+    subtitle = "log₂(FPKM+1) expression, with t-test FDR-adjusted p-values shown below",
+    x = "Overall Survival Category (rGBM)",
+    y = expression(log[2]~expression~(FPKM+1))
+  ) +
+  theme_bw(base_size = 11) +
+  theme(legend.position = "none", panel.grid.minor = element_blank())
 
-# Expression vector
-expr_vec <- expr_adj_all[gene, ]
+print(p)
 
-# Build df with survival + expression
-df_km <- data.frame(
-  sample_id = names(expr_vec),
-  expr      = as.numeric(expr_vec)
-) %>%
-  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
-  dplyr::filter(!is.na(OS_days), !is.na(OS_event))
-
-# Median split
-cutoff <- median(df_km$expr, na.rm = TRUE)
-df_km$expr_group <- ifelse(df_km$expr >= cutoff, "High", "Low")
-
-# Survival object
-surv_obj <- Surv(time = df_km$OS_days, event = df_km$OS_event)
-
-# KM fit
-fit <- survfit(surv_obj ~ expr_group, data = df_km)
-
-# Plot
-ggsurvplot(
-  fit,
-  data       = df_km,
-  pval       = TRUE,
-  risk.table = TRUE,
-  palette    = c("Low" = "#1f77b4", "High" = "#d62728"),
-  legend.labs = c("Low COL1A1", "High COL1A1"),
-  title      = "Overall Survival by COL1A1 Expression",
-  xlab       = "Time (days)",
-  ylab       = "Survival Probability"
-)
-
-```
-
-#### COL3A1
-
-```{r}
-# --- KM analysis for COL3A1 ---
-
-gene <- "COL3A1"
-stopifnot(gene %in% rownames(expr_adj_all))
-
-# Expression vector
-expr_vec <- expr_adj_all[gene, ]
-
-# Build df with survival + expression
-df_km <- data.frame(
-  sample_id = names(expr_vec),
-  expr      = as.numeric(expr_vec)
-) %>%
-  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
-  dplyr::filter(!is.na(OS_days), !is.na(OS_event))
-
-# Median split
-cutoff <- median(df_km$expr, na.rm = TRUE)
-df_km$expr_group <- ifelse(df_km$expr >= cutoff, "High", "Low")
-
-# Survival object
-surv_obj <- Surv(time = df_km$OS_days, event = df_km$OS_event)
-
-# KM fit
-fit <- survfit(surv_obj ~ expr_group, data = df_km)
-
-# Plot
-ggsurvplot(
-  fit,
-  data       = df_km,
-  pval       = TRUE,
-  risk.table = TRUE,
-  palette    = c("Low" = "#1f77b4", "High" = "#d62728"),
-  legend.labs = c("Low COL3A1", "High COL3A1"),
-  title      = "Overall Survival by COL3A1 Expression",
-  xlab       = "Time (days)",
-  ylab       = "Survival Probability"
-)
+# 5) Save
+ggsave(file.path(outdir, "rGBM_COL1A1_COL3A1_by_12moSurvival_withDots.pdf"),
+       p, width = 7, height = 5, device = cairo_pdf)
 
 ```
+
 
 
 
