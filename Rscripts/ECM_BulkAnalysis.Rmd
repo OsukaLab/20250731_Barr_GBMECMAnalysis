@@ -29,6 +29,7 @@ library(org.Hs.eg.db)
 library(enrichplot)
 library(survival)
 library(survminer)
+library(readxl)
 ```
 ### Download and upload input data
 
@@ -1348,672 +1349,348 @@ write_csv(group_means, "/Data/Outputs/TwoGene_GroupMeans_MMP2_MMP9.csv")
 group_means
 
 ```
-### Outcome Analysis
 
-Stratify the data between above and below 12 months survival.
+Clean environment
 
 ```{r}
-# --- rGBM-only: COL1A1/COL3A1 vs 12-month survival with dots & adj p-values ---
+# ---- Clear R Environment ----
 
-stopifnot(exists("expr_adj_all"), exists("sample_meta_all"))
+# Remove all objects from the workspace
+rm(list = ls())
 
-# 1) rGBM-only metadata with survival
-cutoff_days <- 365.25
-meta_rgbm <- sample_meta_all %>%
-  dplyr::filter(group == "rGBM") %>%
-  dplyr::mutate(
-    surv12 = dplyr::case_when(
-      is.na(OS_days) ~ NA_character_,
-      OS_days <= cutoff_days ~ "≤12 months",
-      OS_days >  cutoff_days ~ ">12 months"
-    )
-  ) %>%
-  dplyr::filter(!is.na(surv12))
+# Clear any loaded plots
+if (!is.null(dev.list())) dev.off()
 
-# 2) Expression for target genes
-genes <- c("COL1A1", "COL3A1")
-genes <- intersect(genes, rownames(expr_adj_all))
-stopifnot(length(genes) > 0)
-
-df_expr <- expr_adj_all[genes, meta_rgbm$sample_id, drop = FALSE] %>%
-  as.data.frame() %>%
-  tibble::rownames_to_column("Gene") %>%
-  tidyr::pivot_longer(-Gene, names_to = "sample_id", values_to = "log2_expr") %>%
-  dplyr::left_join(meta_rgbm %>% dplyr::select(sample_id, surv12), by = "sample_id")
-
-# 3) Stats: mean diff, t-test, wilcox, adjusted p-values
-stats_tbl <- df_expr %>%
-  dplyr::group_by(Gene) %>%
-  dplyr::summarise(
-    n_le_12   = sum(surv12 == "≤12 months"),
-    n_gt_12   = sum(surv12 == ">12 months"),
-    mean_le   = mean(log2_expr[surv12 == "≤12 months"], na.rm = TRUE),
-    mean_gt   = mean(log2_expr[surv12 == ">12 months"], na.rm = TRUE),
-    diff_mean = mean_gt - mean_le,
-    t_p       = tryCatch(t.test(log2_expr ~ surv12)$p.value, error = function(e) NA_real_),
-    wilcox_p  = tryCatch(wilcox.test(log2_expr ~ surv12, exact = FALSE)$p.value, error = function(e) NA_real_)
-  ) %>%
-  dplyr::mutate(
-    p_adj_t      = p.adjust(t_p, method = "BH"),
-    p_adj_wilcox = p.adjust(wilcox_p, method = "BH")
-  )
-
-print(stats_tbl)
-
-outdir <- "/Data/Outputs/ECM_Survival"
-if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
-readr::write_csv(stats_tbl, file.path(outdir, "rGBM_COL1A1_COL3A1_by_12moSurvival_stats_withAdj.csv"))
-
-# 4) Plot: boxplots + jittered dots
-p <- ggplot(df_expr, aes(x = surv12, y = log2_expr, fill = surv12)) +
-  geom_boxplot(width = 0.6, outlier.shape = NA, alpha = 0.8) +
-  geom_jitter(aes(color = surv12), width = 0.15, alpha = 0.6, size = 1.8) +
-  facet_wrap(~ Gene, scales = "free_y") +
-  scale_fill_manual(values = c("≤12 months" = "#1f77b4", ">12 months" = "#d62728")) +
-  scale_color_manual(values = c("≤12 months" = "#1f77b4", ">12 months" = "#d62728")) +
-  labs(
-    title = "rGBM only: COL1A1 / COL3A1 expression by 12-month survival",
-    subtitle = "log₂(FPKM+1) expression, with t-test FDR-adjusted p-values shown below",
-    x = "Overall Survival Category (rGBM)",
-    y = expression(log[2]~expression~(FPKM+1))
-  ) +
-  theme_bw(base_size = 11) +
-  theme(legend.position = "none", panel.grid.minor = element_blank())
-
-print(p)
-
-# 5) Save
-ggsave(file.path(outdir, "rGBM_COL1A1_COL3A1_by_12moSurvival_withDots.pdf"),
-       p, width = 7, height = 5, device = cairo_pdf)
+# Clear any existing variables in hidden environments
+gc()
 
 ```
-
-
-
 
 ## GeoMx Data
 
 ### WT Primary vs Rec GBM Data
 
-Hasan already created the DEG csv so i downloaded it from his code and used the CSV for the creation of the following analysis.
+Hasan had already performed the QC on these data. To analyze the data further, I downloaded his Sample_Annotation to serve as the meta data for this analysis. I downloaded the Log2-norm-counts for individual gene analysis across samples. Finally, I downloaded WT_DE_analysis to create volcano plot and heatmap. 
 
-#### Filter csv
 
 ```{r}
+# Define file path
+meta_path <- "/Data/Inputs/Sample_Annotation.xlsx"
 
-# Load DE table and filter to ECM genes
-df_ecm <- read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) %>%
-  rename(
-    estimate = Estimate,
-    pval     = `Pr(>|t|)`,
-    gene     = Gene,
-    group1   = Group1,
-    group2   = Group2,
-    fdr      = FDR
-  ) %>%
-  mutate(gene = trimws(as.character(gene))) %>%
-  filter(gene %in% ecm_gene_list)
-
-# (Optional quick peek)
-message("# rows after ECM filter: ", nrow(df_ecm))
-print(head(df_ecm, 10))
+# Read Excel sheet (default is first sheet) 
+meta <- read_excel(meta_path)
 
 ```
 
+```{r}
+# ---- Filter Metadata: Keep IDH-WT ----
+meta_wt <- meta %>%
+  filter(IDH == "WT")
+
+# Preview result
+glimpse(meta_wt)
+
+```
+```{r}
+# ---- Filter Metadata: Keep IDH-WT and Dx = GBM ----
+meta_wt_gbm <- meta_wt %>%
+  filter(Dx == "GBM")
+
+# Preview result
+glimpse(meta_wt_gbm)
+
+```
+
+Now we have the Sample_ID for WT-GBM, so we will apply this filtering for the Log2-norm-counts. This will give per sample gene expression for gene-specific analysis. 
 
 ```{r}
+# ---- Load Log2-normalized Counts ----
+counts_path <- "/Data/Inputs/Log2-norm-counts.csv"
 
-# --- Data (use df_ecm if present, else load full CSV) ---
-data_to_plot <- if (exists("df_ecm")) {
-  df_ecm
-} else {
-  read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
-    rename(
-      estimate = Estimate,
-      pval     = `Pr(>|t|)`,
-      gene     = Gene,
-      group1   = Group1,
-      group2   = Group2,
-      fdr      = FDR
-    )
+counts <- read_csv(counts_path)
+
+```
+
+```{r}
+# ---- Normalize counts colnames (drop ".dcc"), then filter ----
+
+# Ensure tibble for dplyr compatibility
+counts <- tibble::as_tibble(counts)
+
+# 1) Strip the ".dcc" suffix from sample columns (leave gene column alone)
+nm <- names(counts)
+if (length(nm) >= 2) {
+  nm[-1] <- sub("\\.dcc$", "", nm[-1], perl = TRUE)
+  names(counts) <- nm
 }
 
-# --- Parameters ---
-outdir  <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
-fdr_cut <- 0.05
-lfc_cut <- 0.25         # set to 0 if you only want FDR thresholding
-n_label <- 15           # top-N labels by FDR
+# 2) Match to metadata Sample_IDs
+samples_to_keep <- meta_wt_gbm$Sample_ID
 
-# --- Prep ---
-dfp <- data_to_plot |>
-  mutate(
-    fdr = as.numeric(fdr),
-    estimate = as.numeric(estimate),
-    fdr_clamped = pmax(fdr, 1e-300),             # avoid Inf from log10(0)
-    neglog10_fdr = -log10(fdr_clamped),
-    status = case_when(
-      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
-      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
-      TRUE ~ "NS"
-    )
+# Quick diagnostics
+found   <- intersect(samples_to_keep, names(counts))
+missing <- setdiff(samples_to_keep, names(counts))
+
+message("Matched samples: ", length(found), " / ", length(samples_to_keep))
+if (length(missing) > 0) {
+  message("Not found (after stripping .dcc): ", paste(head(missing, 10), collapse = ", "),
+          ifelse(length(missing) > 10, " ...", ""))
+}
+
+# 3) Filter to gene column + matched sample columns
+gene_col <- names(counts)[1]
+counts_filtered <- counts %>%
+  dplyr::select(all_of(gene_col), any_of(found))
+
+# Peek
+dim(counts_filtered)
+head(counts_filtered[, 1:min(6, ncol(counts_filtered))])
+
+```
+
+```{r}
+# First column name (gene id)
+gene_col <- names(counts_filtered)[1]
+
+# Long format
+counts_long <- counts_filtered %>%
+  pivot_longer(
+    cols = -all_of(gene_col),
+    names_to = "Sample_ID",
+    values_to = "log2_expr"
   )
 
-# label the top-N smallest FDR genes
-labs_to_label <- dfp |> arrange(fdr) |> slice_head(n = n_label) |> pull(gene)
+# Rename the first column to "Gene" using base R to avoid plyr/dplyr conflicts
+names(counts_long)[names(counts_long) == gene_col] <- "Gene"
 
-# comparison tag for filenames
-g1 <- unique(dfp$group1)[1] %||% "Group1"
-g2 <- unique(dfp$group2)[1] %||% "Group2"
-cmp_tag <- paste0(g1, "_vs_", g2)
+# Sanity check
+glimpse(counts_long)
 
-# --- Volcano (x = Estimate; y = -log10(FDR)) ---
-p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
-  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
-  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
-  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
-  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
-  geom_text_repel(
-    data = dfp |> filter(gene %in% labs_to_label),
-    aes(label = gene),
-    max.overlaps = Inf, box.padding = 0.35, point.padding = 0.2,
-    min.segment.length = 0, seed = 123, size = 3
-  ) +
+```
+
+```{r}
+# ---- COL1A1 / COL3A1: Pri vs Rec comparison ----
+
+# 0) Pick genes and confirm they exist
+genes_target <- c("COL1A1", "COL3A1")
+genes_found  <- intersect(genes_target, unique(counts_long$Gene))
+if (length(genes_found) == 0) stop("Neither COL1A1 nor COL3A1 found in counts_long$Gene.")
+if (length(genes_found) < length(genes_target)) {
+  message("Missing genes: ", paste(setdiff(genes_target, genes_found), collapse = ", "))
+}
+
+# 1) Merge Pri/Rec info onto long expression
+df_expr <- counts_long %>%
+  filter(Gene %in% genes_found) %>%
+  left_join(meta_wt_gbm %>% dplyr::select(Sample_ID, Pri_Rec), by = "Sample_ID") %>%
+  filter(!is.na(Pri_Rec))
+
+# 2) Summary stats
+expr_summary <- df_expr %>%
+  group_by(Gene, Pri_Rec) %>%
+  summarise(
+    n            = dplyr::n(),
+    mean_log2    = mean(log2_expr, na.rm = TRUE),
+    sd_log2      = sd(log2_expr,   na.rm = TRUE),
+    se_log2      = sd_log2 / sqrt(n),
+    .groups = "drop"
+  )
+
+print(expr_summary)
+
+# 3) Welch t-tests (Pri vs Rec) per gene
+t_tbl <- lapply(split(df_expr, df_expr$Gene), function(d) {
+  if (length(unique(d$Pri_Rec)) < 2) {
+    return(data.frame(Gene = unique(d$Gene), p_value = NA_real_, stat = NA_real_))
+  }
+  tt <- t.test(log2_expr ~ Pri_Rec, data = d, var.equal = FALSE)
+  data.frame(
+    Gene      = unique(d$Gene),
+    p_value   = tt$p.value,
+    statistic = unname(tt$statistic),
+    mean_Pri  = mean(d$log2_expr[d$Pri_Rec == "Pri"], na.rm = TRUE),
+    mean_Rec  = mean(d$log2_expr[d$Pri_Rec == "Rec"], na.rm = TRUE)
+  )
+}) %>% bind_rows()
+
+print(t_tbl)
+
+# 4) Plot (box + jitter), per gene, with p-value annotation
+# choose simple, clear colors (limited palette)
+col_map <- c(Pri = "#1F78B4", Rec = "#E31A1C")
+
+# build per-gene p-value labels to annotate on each facet
+p_labs <- t_tbl %>%
+  mutate(label = paste0("Welch t-test p = ", format.pval(p_value, digits = 3, eps = 1e-3)))
+
+# y-positions for labels: place slightly above the max per gene
+y_pos <- df_expr %>%
+  group_by(Gene) %>%
+  summarise(y = max(log2_expr, na.rm = TRUE), .groups = "drop")
+
+p_labs <- left_join(p_labs, y_pos, by = "Gene") %>%
+  mutate(y = y + 0.05 * abs(y))  # small padding
+
+p <- ggplot(df_expr, aes(x = Pri_Rec, y = log2_expr, fill = Pri_Rec)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.65) +
+  geom_jitter(width = 0.15, alpha = 0.8, size = 2) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  scale_fill_manual(values = col_map) +
   labs(
-    title = paste0(cmp_tag, " — Volcano (y = −log10 FDR)"),
-    x = expression(log[2]~fold~change~(Estimate)),
-    y = expression(-log[10]~FDR),
-    color = NULL
+    title = "COL1A1 / COL3A1 log2-normalized expression: Pri vs Rec GBM",
+    x = NULL,
+    y = expression(log[2]~normalized~expression)
   ) +
-  theme_minimal(base_size = 12)
+  theme_classic(base_size = 14) +
+  theme(legend.position = "none",
+        strip.background = element_blank(),
+        axis.text.x = element_text(size = 12))
 
-# --- Save ---
-ggsave(file.path(outdir, paste0("volcano_PADJ_vs_Estimate_", cmp_tag, ".pdf")),
-       p_volc, width = 7, height = 5)
-
-
-# Quick counts (optional)
-dfp |> summarise(
-  n_total = n(),
-  n_sig   = sum(fdr < fdr_cut, na.rm = TRUE),
-  n_up    = sum(fdr < fdr_cut & estimate > 0, na.rm = TRUE),
-  n_down  = sum(fdr < fdr_cut & estimate < 0, na.rm = TRUE)
-) |> print()
+# add p-value annotations
+p + geom_text(
+  data = p_labs,
+  aes(x = "Rec", y = y, label = label),
+  inherit.aes = FALSE,
+  size = 4.2,
+  hjust = 1
+)
 
 ```
+
+#### Volcano plot
+
 ```{r}
+# ---- Load Completed WT DEG Analysis ----
+# File path
+wt_deg_path <- "/Data/Inputs/WT_DE_analysis.csv"
 
-# Paths
-infile <- "/Data/Inputs/WT_DE_analysis.csv"
-outdir <- "/Data/Outputs/GeoMx"
-if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
-outfile <- file.path(outdir, "WT_DE_analysis_filtered_to_ECM_GO0031012.csv")
+# Read in the CSV
+wt_deg <- read_csv(wt_deg_path)
 
-# Ensure we have the ECM list
-stopifnot(exists("ecm_gene_list"), length(ecm_gene_list) > 0)
+# Quick structure check
+glimpse(wt_deg)
 
-# Use existing df_ecm if present; otherwise load and filter now
-df_ecm <- if (exists("df_ecm")) {
-  df_ecm
-} else {
-  read_csv(infile, show_col_types = FALSE) |>
-    rename(
-      estimate = Estimate,
-      pval     = `Pr(>|t|)`,
-      gene     = Gene,
-      group1   = Group1,
-      group2   = Group2,
-      fdr      = FDR
-    ) |>
-    mutate(gene = trimws(as.character(gene))) |>
-    filter(gene %in% ecm_gene_list)
-}
+# Optional: clean column names (replace spaces with underscores)
+wt_deg <- wt_deg %>%
+  rename_with(~ gsub("\\s+", "_", .x))
 
-# Save
-write_csv(df_ecm, outfile)
-
-cat("Saved:", outfile, "\nRows:", nrow(df_ecm), " Unique genes:", dplyr::n_distinct(df_ecm$gene), "\n")
+# Preview first few rows
+head(wt_deg)
 
 ```
 
 ```{r}
+# ---- Volcano: Rec vs Pri from wt_deg ----
 
-# --- Data (use df_ecm if present, else load CSV) ---
-data_to_plot <- if (exists("df_ecm")) {
-  df_ecm
-} else {
-  read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
-    rename(
-      estimate = Estimate,
-      pval     = `Pr(>|t|)`,
-      gene     = Gene,
-      group1   = Group1,
-      group2   = Group2,
-      fdr      = FDR
-    )
-}
+# 0) thresholds (tweak if you like)
+padj_cut <- 0.05
+lfc_cut  <- 1
 
-# --- Parameters ---
-outdir  <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
-fdr_cut <- 0.05
-lfc_cut <- 0.25
-n_label <- 20   # label top 20
-
-# --- Prep ---
-dfp <- data_to_plot |>
+# 1) Prepare data
+# Assume Estimate currently encodes Pri vs Rec. Flip sign so it's Rec vs Pri.
+df <- wt_deg %>%
   mutate(
-    fdr = as.numeric(fdr),
-    estimate = as.numeric(estimate),
-    fdr_clamped = pmax(fdr, 1e-300),
-    neglog10_fdr = -log10(fdr_clamped),
-    status = case_when(
-      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
-      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
-      TRUE ~ "NS"
+    gene = coalesce(
+      # try to guess a gene/symbol column; add/adjust if yours is different
+      wt_deg$Gene %||% wt_deg$gene %||% wt_deg$SYMBOL %||% wt_deg$Symbol,
+      as.character(seq_len(n()))  # fallback row index if no gene col
+    ),
+    lfc      = -Estimate,          # <-- flip to Rec vs Pri
+    padj     = FDR,
+    neglog10 = -log10(padj),
+    status   = case_when(
+      padj < padj_cut & lfc >  lfc_cut ~ "Up",
+      padj < padj_cut & lfc < -lfc_cut ~ "Down",
+      TRUE                              ~ "NS"
     )
   )
 
-labs_to_label <- dfp |> arrange(fdr) |> slice_head(n = n_label) |> pull(gene)
+# 2) choose labels (top by |lfc| among significant)
+labs <- df %>%
+  filter(status != "NS") %>%
+  arrange(desc(abs(lfc))) %>%
+  pull(gene) %>%
+  head(20)
 
-g1 <- unique(dfp$group1)[1] %||% "Group1"
-g2 <- unique(dfp$group2)[1] %||% "Group2"
-cmp_tag <- paste0(g1, "_vs_", g2)
-
-# --- Volcano plot ---
-p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
+# 3) plot
+ggplot(df, aes(x = lfc, y = neglog10)) +
   geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
   scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
-  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
+  geom_hline(yintercept = -log10(padj_cut), linetype = 2, linewidth = 0.3) +
   geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
   geom_text_repel(
-    data = dfp |> filter(gene %in% labs_to_label),
+    data = subset(df, gene %in% labs),
     aes(label = gene),
     max.overlaps = Inf,
     box.padding = 0.35,
     point.padding = 0.2,
     min.segment.length = 0,
-    seed = 123,
-    size = 3
+    seed = 123
   ) +
   labs(
-    title = paste0(cmp_tag, " — Volcano (top ", n_label, " labeled)"),
-    x = expression(log[2]~fold~change~(Estimate)),
-    y = expression(-log[10]~FDR),
-    color = NULL
+    title = "Rec vs Pri GBM — Differential Expression (WT subset)",
+    x = expression(log[2]~fold~change~"(Rec vs Pri)"),
+    y = expression(-log[10]~adjusted~p)
   ) +
-  theme_minimal(base_size = 12)
-
-# --- Save PDF only ---
-ggsave(file.path(outdir, paste0("volcano_PADJ_vs_Estimate_top", n_label, "_", cmp_tag, ".pdf")),
-       p_volc, width = 7, height = 5)
+  theme_classic(base_size = 14) +
+  theme(legend.position = "right")
 
 ```
 
-
 ```{r}
+# ---- Collagen Heatmap: Pri vs Rec ----
 
-# --- Data (use df_ecm if present, else load full CSV) ---
-data_use <- if (exists("df_ecm")) {
-  df_ecm
-} else {
-  read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
-    rename(
-      estimate = Estimate,
-      pval     = `Pr(>|t|)`,
-      gene     = Gene,
-      group1   = Group1,
-      group2   = Group2,
-      fdr      = FDR
-    )
-}
+# 1) Build expression matrix (genes as rownames)
+gene_col <- names(counts_filtered)[1]
+expr_mat <- counts_filtered %>%
+  column_to_rownames(var = gene_col) %>%
+  as.matrix()
 
-# --- Params/paths ---
-outdir  <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
-fdr_cut <- 0.05
+# 2) Align metadata and order columns Pri -> Rec
+meta_sub <- meta_wt_gbm %>%
+  filter(Sample_ID %in% colnames(expr_mat)) %>%
+  mutate(Pri_Rec = factor(Pri_Rec, levels = c("Pri","Rec"))) %>%
+  arrange(Pri_Rec)
 
-# Determine comparison labels for filenames
-g1 <- unique(data_use$group1)[1] %||% "Group1"
-g2 <- unique(data_use$group2)[1] %||% "Group2"
-cmp_tag <- paste0(g1, "_vs_", g2)
+expr_mat <- expr_mat[, meta_sub$Sample_ID, drop = FALSE]
 
-# --- Split significant sets (FDR only) ---
-sig_all <- data_use %>%
-  mutate(
-    direction = case_when(
-      estimate > 0 ~ paste0("Higher in ", g1),
-      estimate < 0 ~ paste0("Higher in ", g2),
-      TRUE ~ "No change"
-    )
-  ) %>%
-  filter(!is.na(fdr), fdr < fdr_cut)
+# 3) Select collagen genes (prefix "COL", case-insensitive)
+collagen_genes <- rownames(expr_mat)[grepl("^COL", rownames(expr_mat), ignore.case = TRUE)]
 
-sig_up_in_g1 <- sig_all %>% filter(estimate > 0) %>% arrange(fdr)
-sig_up_in_g2 <- sig_all %>% filter(estimate < 0) %>% arrange(fdr)
+# Keep only collagens present
+mat_col <- expr_mat[intersect(rownames(expr_mat), collagen_genes), , drop = FALSE]
 
-# --- Save full tables ---
-write_csv(sig_up_in_g1,
-          file.path(outdir, paste0("sig_up_in_", g1, "_FDRlt", fdr_cut, "_", cmp_tag, ".csv")))
-write_csv(sig_up_in_g2,
-          file.path(outdir, paste0("sig_up_in_", g2, "_FDRlt", fdr_cut, "_", cmp_tag, ".csv")))
+# 4) Drop rows with zero variance (pheatmap can't scale those)
+var_ok <- apply(mat_col, 1, function(x) sd(x, na.rm = TRUE) > 0)
+mat_col <- mat_col[var_ok, , drop = FALSE]
 
-# --- Print tidy preview tables (top 25 each) ---
-preview_up_g1 <- sig_up_in_g1 %>%
-  dplyr::select(gene, estimate, pval, fdr, direction) %>%
-  dplyr::slice_head(n = 25)
+# 5) Column annotation (Pri vs Rec)
+ann_col <- data.frame(Pri_Rec = meta_sub$Pri_Rec)
+rownames(ann_col) <- meta_sub$Sample_ID
 
-preview_up_g2 <- sig_up_in_g2 %>%
-  dplyr::select(gene, estimate, pval, fdr, direction) %>%
-  dplyr::slice_head(n = 25)
+# 6) Heatmap (row-scaled)
+# Minimal, readable palette
+pal <- colorRampPalette(c("#1f77b4", "white", "#d62728"))(101)
 
-cat("\n== Significant (FDR < 0.05) — Up in ", g1, " ==\n", sep = "")
-if ("knitr" %in% rownames(installed.packages())) {
-  knitr::kable(preview_up_g1, digits = 4)
-} else {
-  print(preview_up_g1, n = nrow(preview_up_g1))
-}
-
-cat("\n== Significant (FDR < 0.05) — Up in ", g2, " ==\n", sep = "")
-if ("knitr" %in% rownames(installed.packages())) {
-  knitr::kable(preview_up_g2, digits = 4)
-} else {
-  print(preview_up_g2, n = nrow(preview_up_g2))
-}
-
-
-# --- Quick counts ---
-summary_counts <- tibble(
-  total_tested   = nrow(data_use),
-  total_sig      = nrow(sig_all),
-  sig_up_in_g1   = nrow(sig_up_in_g1),
-  sig_up_in_g2   = nrow(sig_up_in_g2)
-)
-print(summary_counts)
-
-```
-```{r}
-
-# Use ECM-filtered table if present; else load full table
-data_use <- if (exists("df_ecm")) {
-  df_ecm
-} else {
-  readr::read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
-    dplyr::rename(
-      estimate = Estimate,
-      pval     = `Pr(>|t|)`,
-      gene     = Gene,
-      group1   = Group1,
-      group2   = Group2,
-      fdr      = FDR
-    )
-}
-
-# Clean & ensure numeric
-data_use <- data_use |>
-  dplyr::mutate(estimate = as.numeric(estimate)) |>
-  dplyr::filter(!is.na(estimate))
-
-# Top 10 most positive (higher in Group1/Pri)
-top10_pos <- data_use |>
-  dplyr::filter(estimate > 0) |>
-  dplyr::arrange(dplyr::desc(estimate)) |>
-  dplyr::slice_head(n = 10) |>
-  dplyr::select(gene, estimate, pval, fdr)
-
-# Top 10 most negative (higher in Group2/Rec)
-top10_neg <- data_use |>
-  dplyr::filter(estimate < 0) |>
-  dplyr::arrange(estimate) |>
-  dplyr::slice_head(n = 10) |>
-  dplyr::select(gene, estimate, pval, fdr)
-
-# Print nicely
-cat("\n== Top 10 most positive log2FC (higher in ", unique(data_use$group1)[1], ") ==\n", sep = "")
-if ("knitr" %in% rownames(installed.packages())) knitr::kable(top10_pos, digits = 4) else print(top10_pos, n = 10)
-
-cat("\n== Top 10 most negative log2FC (higher in ", unique(data_use$group2)[1], ") ==\n", sep = "")
-if ("knitr" %in% rownames(installed.packages())) knitr::kable(top10_neg, digits = 4) else print(top10_neg, n = 10)
-
-# (Optional) Save to disk
-outdir <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
-readr::write_csv(top10_pos, file.path(outdir, "top10_positive_log2FC.csv"))
-readr::write_csv(top10_neg, file.path(outdir, "top10_negative_log2FC.csv"))
-
-```
-```{r}
-
-# --- Data (prefer ECM-filtered if present) ---
-data_to_plot <- if (exists("df_ecm")) {
-  df_ecm
-} else {
-  readr::read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) |>
-    dplyr::rename(
-      estimate = Estimate,
-      pval     = `Pr(>|t|)`,
-      gene     = Gene,
-      group1   = Group1,
-      group2   = Group2,
-      fdr      = FDR
-    )
-}
-
-# --- Parameters ---
-outdir       <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
-fdr_cut      <- 0.05
-lfc_cut      <- 0.25         # set to 0 if you only want FDR thresholding
-n_label_abs  <- 10           # <— label N genes with largest |Estimate|
-
-# --- Prep ---
-dfp <- data_to_plot |>
-  dplyr::mutate(
-    estimate      = as.numeric(estimate),
-    fdr           = as.numeric(fdr),
-    fdr_clamped   = pmax(fdr, 1e-300),           # avoid Inf from log10(0)
-    neglog10_fdr  = -log10(fdr_clamped),
-    abs_estimate  = abs(estimate),
-    status = dplyr::case_when(
-      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
-      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
-      TRUE ~ "NS"
-    )
-  )
-
-# Genes to label: top N by |Estimate|
-labs_to_label <- dfp |>
-  dplyr::arrange(dplyr::desc(abs_estimate)) |>
-  dplyr::slice_head(n = n_label_abs) |>
-  dplyr::pull(gene)
-
-# Comparison tag for filenames
-g1 <- unique(dfp$group1)[1]; if (is.null(g1) || is.na(g1)) g1 <- "Group1"
-g2 <- unique(dfp$group2)[1]; if (is.null(g2) || is.na(g2)) g2 <- "Group2"
-cmp_tag <- paste0(g1, "_vs_", g2)
-
-# --- Volcano (x = Estimate; y = -log10(FDR)) with |Estimate| labels ---
-p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
-  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
-  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
-  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
-  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
-  ggrepel::geom_text_repel(
-    data = dfp |> dplyr::filter(gene %in% labs_to_label),
-    aes(label = gene),
-    max.overlaps = Inf,
-    box.padding = 0.35,
-    point.padding = 0.2,
-    min.segment.length = 0,
-    seed = 123,
-    size = 3
-  ) +
-  labs(
-    title = paste0(cmp_tag, " — Volcano (labels: top ", n_label_abs, " by |log2FC|)"),
-    x = expression(log[2]~fold~change~(Estimate)),
-    y = expression(-log[10]~FDR),
-    color = NULL
-  ) +
-  theme_minimal(base_size = 12)
-
-# --- Save PDF only ---
-ggsave(
-  filename = file.path(outdir, paste0("volcano_labelTopAbsLFC_", n_label_abs, "_", cmp_tag, ".pdf")),
-  plot = p_volc, width = 7, height = 5
+pheatmap(
+  mat_col,
+  scale           = "row",
+  cluster_rows    = TRUE,
+  cluster_cols    = FALSE,          # keep Pri -> Rec order
+  annotation_col  = ann_col,
+  show_colnames   = FALSE,
+  fontsize_row    = 8,
+  color           = pal,
+  main            = "Collagen genes (row-scaled z-scores): Rec vs Pri GBM"
 )
 
-```
-
-#### Flipped for rec vs pri
-```{r}
-
-# If you already have data_use, keep it; else load:
-if (!exists("data_use")) {
-  data_use <- readr::read_csv("/Data/Inputs/WT_DE_analysis.csv", show_col_types = FALSE) %>%
-    dplyr::rename(
-      estimate = Estimate, pval = `Pr(>|t|)`, gene = Gene,
-      group1 = Group1, group2 = Group2, fdr = FDR
-    )
-}
-
-outdir <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
-
-# SAFE flip: Rec − Pri (negate estimate, swap groups via temp)
-data_flip <- data_use %>%
-  dplyr::mutate(
-    estimate = -as.numeric(estimate),
-    .g1 = group1, .g2 = group2
-  ) %>%
-  dplyr::mutate(group1 = .g2, group2 = .g1) %>%
-  dplyr::select(-.g1, -.g2)
-
-# Quick sanity check: should *not* be the same
-# print(dplyr::count(data_flip, group1, group2))
-
-# Save flipped CSV
-g1_new <- unique(data_flip$group1)[1] %||% "Group1"
-g2_new <- unique(data_flip$group2)[1] %||% "Group2"
-cmp_tag <- paste0(g1_new, "_vs_", g2_new)
-flipped_csv <- file.path(outdir, paste0("WT_DE_analysis_FLIPPED_", cmp_tag, ".csv"))
-readr::write_csv(data_flip, flipped_csv)
-
-# Volcano with top 20 by |log2FC| (PDF only)
-fdr_cut <- 0.05; lfc_cut <- 0.25; n_label_abs <- 20
-dfp <- data_flip %>%
-  dplyr::mutate(
-    fdr = as.numeric(fdr),
-    fdr_clamped = pmax(fdr, 1e-300),
-    neglog10_fdr = -log10(fdr_clamped),
-    abs_estimate = abs(estimate),
-    status = dplyr::case_when(
-      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
-      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
-      TRUE ~ "NS"
-    )
-  )
-labs_to_label <- dfp %>% dplyr::arrange(dplyr::desc(abs_estimate)) %>%
-  dplyr::slice_head(n = n_label_abs) %>% dplyr::pull(gene)
-
-p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
-  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
-  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
-  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
-  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
-  ggrepel::geom_text_repel(
-    data = dplyr::filter(dfp, gene %in% labs_to_label),
-    aes(label = gene), max.overlaps = Inf, box.padding = 0.35,
-    point.padding = 0.2, min.segment.length = 0, seed = 123, size = 3
-  ) +
-  labs(
-    title = paste0(cmp_tag, " — Volcano (labels: top ", n_label_abs, " by |log2FC|)"),
-    x = expression(log[2]~fold~change~(Estimate)),
-    y = expression(-log[10]~FDR),
-    color = NULL
-  ) +
-  theme_minimal(base_size = 12)
-
-pdf_path <- file.path(outdir, paste0("volcano_FLIPPED_labelTopAbsLFC_", n_label_abs, "_", cmp_tag, ".pdf"))
-ggsave(pdf_path, p_volc, width = 7, height = 5)
-
-cat("Fixed labels ✅\nFlipped CSV: ", flipped_csv, "\nVolcano PDF: ", pdf_path, "\n", sep = "")
-
-```
-
-
-```{r}
-# Filtered ECM only 
-
-# Paths/params
-infile  <- "/Data/Inputs/WT_DE_analysis.csv"
-outdir  <- "/Data/Outputs/GeoMx"; if (!dir.exists(outdir)) dir.create(outdir, TRUE)
-fdr_cut <- 0.05; lfc_cut <- 0.25; n_label_abs <- 20
-
-# 1) Load raw
-df_raw <- readr::read_csv(infile, show_col_types = FALSE) %>%
-  dplyr::rename(
-    estimate = Estimate, pval = `Pr(>|t|)`, gene = Gene,
-    group1 = Group1, group2 = Group2, fdr = FDR
-  ) %>%
-  dplyr::mutate(estimate = as.numeric(estimate), fdr = as.numeric(fdr))
-
-# 2) Ensure ECM filtering
-data_use <- if (exists("df_ecm")) {
-  df_ecm
-} else if (exists("ecm_gene_list")) {
-  df_raw %>% dplyr::filter(gene %in% ecm_gene_list)
-} else {
-  message("Warning: ecm_gene_list not found — using full table (unfiltered).")
-  df_raw
-}
-
-# 3) Flip comparison (Rec − Pri) safely (use temp columns for swap)
-data_flip <- data_use %>%
-  dplyr::mutate(
-    estimate = -estimate,
-    .g1 = group1, .g2 = group2
-  ) %>%
-  dplyr::mutate(group1 = .g2, group2 = .g1) %>%
-  dplyr::select(-.g1, -.g2)
-
-# 4) Save flipped ECM CSV
-g1_new <- unique(data_flip$group1)[1] %||% "Group1"
-g2_new <- unique(data_flip$group2)[1] %||% "Group2"
-cmp_tag <- paste0(g1_new, "_vs_", g2_new)
-flipped_csv <- file.path(outdir, paste0("WT_DE_analysis_FLIPPED_ECM_", cmp_tag, ".csv"))
-readr::write_csv(data_flip, flipped_csv)
-
-# 5) Volcano (PDF only), label top 20 by |log2FC|
-dfp <- data_flip %>%
-  dplyr::mutate(
-    fdr_clamped  = pmax(fdr, 1e-300),
-    neglog10_fdr = -log10(fdr_clamped),
-    abs_estimate = abs(estimate),
-    status = dplyr::case_when(
-      fdr < fdr_cut & estimate >=  lfc_cut ~ "Up",
-      fdr < fdr_cut & estimate <= -lfc_cut ~ "Down",
-      TRUE ~ "NS"
-    )
-  )
-labs_to_label <- dfp %>% dplyr::arrange(dplyr::desc(abs_estimate)) %>%
-  dplyr::slice_head(n = n_label_abs) %>% dplyr::pull(gene)
-
-p_volc <- ggplot(dfp, aes(x = estimate, y = neglog10_fdr)) +
-  geom_point(aes(color = status), size = 1.6, alpha = 0.9) +
-  scale_color_manual(values = c(Up = "#d62728", Down = "#1f77b4", NS = "grey70")) +
-  geom_hline(yintercept = -log10(fdr_cut), linetype = 2, linewidth = 0.3) +
-  geom_vline(xintercept = c(-lfc_cut, lfc_cut), linetype = 2, linewidth = 0.3) +
-  ggrepel::geom_text_repel(
-    data = dplyr::filter(dfp, gene %in% labs_to_label),
-    aes(label = gene), max.overlaps = Inf, box.padding = 0.35,
-    point.padding = 0.2, min.segment.length = 0, seed = 123, size = 3
-  ) +
-  labs(
-    title = paste0(cmp_tag, " (ECM) — Volcano (labels: top ", n_label_abs, " by |log2FC|)"),
-    x = expression(log[2]~fold~change~(Estimate)),
-    y = expression(-log[10]~FDR),
-    color = NULL
-  ) +
-  theme_minimal(base_size = 12)
-
-pdf_path <- file.path(outdir, paste0("volcano_FLIPPED_ECM_labelTopAbsLFC_", n_label_abs, "_", cmp_tag, ".pdf"))
-ggsave(pdf_path, p_volc, width = 7, height = 5)
-
-cat("Flipped (ECM) CSV:\n  ", flipped_csv, "\nVolcano PDF:\n  ", pdf_path, "\n", sep = "")
+# --- Optional: save to file (uncomment to export) ---
+# out_png <- "/Data/Outputs/Heatmap_Collagens_Rec_vs_Pri.png"
+# pheatmap(
+#   mat_col, scale="row", cluster_rows=TRUE, cluster_cols=FALSE,
+#   annotation_col=ann_col, show_colnames=FALSE, fontsize_row=8,
+#   color=pal, filename=out_png, width=8, height=10
+# )
 
 ```
 
