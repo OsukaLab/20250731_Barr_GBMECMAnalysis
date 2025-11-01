@@ -930,6 +930,7 @@ dim(H_collagen)
 table(ann_col$Group)
 
 ```
+
 ```{r}
 # --- STEP 2: Collagen-only ECM heatmap (columns ordered by phylogeny) ---
 
@@ -1468,8 +1469,10 @@ glimpse(counts_long)
 
 ```
 
+#### Collagen Expression Across Tumor Type and Patient ID
+
 ```{r}
-# ---- COL1A1 / COL3A1: Pri vs Rec comparison ----
+# ---- COL1A1 / COL3A1: Paired Pri vs Rec comparison (duplicate-safe) ----
 
 # 0) Pick genes and confirm they exist
 genes_target <- c("COL1A1", "COL3A1")
@@ -1479,83 +1482,446 @@ if (length(genes_found) < length(genes_target)) {
   message("Missing genes: ", paste(setdiff(genes_target, genes_found), collapse = ", "))
 }
 
-# 1) Merge Pri/Rec info onto long expression
+# 1) Merge Pri/Rec and PtID info; keep only rows with both present
 df_expr <- counts_long %>%
-  filter(Gene %in% genes_found) %>%
-  left_join(meta_wt_gbm %>% dplyr::select(Sample_ID, Pri_Rec), by = "Sample_ID") %>%
-  filter(!is.na(Pri_Rec))
+  dplyr::filter(Gene %in% genes_found) %>%
+  dplyr::left_join(
+    meta_wt_gbm %>% dplyr::select(Sample_ID, Pri_Rec, PtID),
+    by = "Sample_ID"
+  ) %>%
+  dplyr::filter(!is.na(Pri_Rec) & !is.na(PtID))
 
-# 2) Summary stats
+# 2) Keep only patients that have BOTH Pri and Rec in this subset
+paired_pts <- df_expr %>%
+  dplyr::distinct(PtID, Pri_Rec) %>%
+  dplyr::count(PtID) %>%
+  dplyr::filter(n >= 2) %>%             # has at least 2 statuses (Pri & Rec)
+  dplyr::pull(PtID)
+
+df_paired <- df_expr %>%
+  dplyr::filter(PtID %in% paired_pts)
+
+# 3) (Key fix) Collapse duplicates within (Gene, PtID, Pri_Rec) to ONE value (mean)
+df_paired_agg <- df_paired %>%
+  dplyr::group_by(Gene, PtID, Pri_Rec) %>%
+  dplyr::summarise(log2_expr = mean(log2_expr, na.rm = TRUE), .groups = "drop")
+
+# 4) Paired t-test per gene, guarding against incomplete pairs
+t_tbl_paired <- lapply(split(df_paired_agg, df_paired_agg$Gene), function(d) {
+  wide <- d %>%
+    tidyr::pivot_wider(
+      names_from = Pri_Rec,
+      values_from = log2_expr,
+      values_fill = NA_real_
+    )
+
+  # Keep complete Pri–Rec pairs only
+  wide_cc <- wide %>% dplyr::filter(!is.na(Pri) & !is.na(Rec))
+  n_pairs <- nrow(wide_cc)
+
+  if (n_pairs >= 2) {
+    tt <- t.test(wide_cc$Pri, wide_cc$Rec, paired = TRUE)
+    data.frame(
+      Gene        = unique(d$Gene),
+      n_pairs     = n_pairs,
+      mean_Pri    = mean(wide_cc$Pri, na.rm = TRUE),
+      mean_Rec    = mean(wide_cc$Rec, na.rm = TRUE),
+      mean_delta  = mean(wide_cc$Rec - wide_cc$Pri, na.rm = TRUE), # Rec - Pri
+      p_value     = tt$p.value,
+      statistic   = unname(tt$statistic),
+      stringsAsFactors = FALSE
+    )
+  } else if (n_pairs == 1) {
+    data.frame(
+      Gene        = unique(d$Gene),
+      n_pairs     = n_pairs,
+      mean_Pri    = wide_cc$Pri[1],
+      mean_Rec    = wide_cc$Rec[1],
+      mean_delta  = wide_cc$Rec[1] - wide_cc$Pri[1],
+      p_value     = NA_real_,
+      statistic   = NA_real_,
+      stringsAsFactors = FALSE
+    )
+  } else {
+    data.frame(
+      Gene        = unique(d$Gene),
+      n_pairs     = 0L,
+      mean_Pri    = NA_real_,
+      mean_Rec    = NA_real_,
+      mean_delta  = NA_real_,
+      p_value     = NA_real_,
+      statistic   = NA_real_,
+      stringsAsFactors = FALSE
+    )
+  }
+}) %>% dplyr::bind_rows() %>%
+  dplyr::arrange(Gene)
+
+print(t_tbl_paired)
+
+```
+
+```{r}
+# =========================
+# Paired line plot (Pri vs Rec) for COL1A1 / COL3A1
+# Requires: df_paired_agg from previous step (one value per Gene x PtID x Pri_Rec)
+# =========================
+
+# 1) Keep only complete Pri–Rec pairs per Gene x PtID
+pairs_complete <- df_paired_agg %>%
+  group_by(Gene, PtID) %>%
+  filter(n_distinct(Pri_Rec) == 2) %>%
+  ungroup() %>%
+  mutate(Pri_Rec = factor(Pri_Rec, levels = c("Pri", "Rec")))
+
+# 2) Compute paired t-test p-values (per gene) for annotation
+t_tbl_paired <- pairs_complete %>%
+  select(Gene, PtID, Pri_Rec, log2_expr) %>%
+  pivot_wider(names_from = Pri_Rec, values_from = log2_expr, values_fill = NA_real_) %>%
+  group_by(Gene) %>%
+  do({
+    dat <- .
+    # guard: need at least 2 pairs to run a paired t-test
+    if (nrow(dat) >= 2) {
+      tt <- t.test(dat$Pri, dat$Rec, paired = TRUE)
+      tibble(
+        n_pairs    = nrow(dat),
+        mean_delta = mean(dat$Rec - dat$Pri, na.rm = TRUE),
+        p_value    = tt$p.value
+      )
+    } else {
+      tibble(n_pairs = nrow(dat), mean_delta = NA_real_, p_value = NA_real_)
+    }
+  }) %>%
+  ungroup() %>%
+  mutate(p_lab = paste0(
+    "Paired t-test p = ",
+    ifelse(is.na(p_value), "NA", format.pval(p_value, digits = 3, eps = 1e-3))
+  ))
+
+# 3) Pick sensible y-positions for the p-value labels
+lab_pos <- pairs_complete %>%
+  group_by(Gene) %>%
+  summarise(y_max = max(log2_expr, na.rm = TRUE), .groups = "drop") %>%
+  left_join(t_tbl_paired, by = "Gene") %>%
+  mutate(y = y_max + 0.05 * abs(y_max))
+
+# 4) Colors (small, clear palette)
+col_map <- c(Pri = "#1F78B4", Rec = "#E31A1C")
+
+# 5) Plot
+p_paired <- ggplot(pairs_complete, aes(x = Pri_Rec, y = log2_expr, group = PtID)) +
+  # one line per patient
+  geom_line(color = "gray60", alpha = 0.7, linewidth = 0.7) +
+  # points colored by condition
+  geom_point(aes(color = Pri_Rec), size = 2.2, alpha = 0.9) +
+  # show condition means (optional, subtle)
+  stat_summary(fun = mean, geom = "point", size = 3.2, shape = 21,
+               fill = "white", color = "black", stroke = 0.6) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  scale_color_manual(values = col_map, guide = "none") +
+  labs(
+    title = "Paired Pri–Rec expression per patient (COL1A1 / COL3A1)",
+    x = NULL,
+    y = expression(log[2]~normalized~expression)
+  ) +
+  theme_classic(base_size = 14) +
+  theme(strip.background = element_blank(),
+        axis.text.x = element_text(size = 12)) +
+  # p-value labels placed near the Rec side
+  geom_text(
+    data = lab_pos,
+    aes(x = "Rec", y = y, label = p_lab),
+    inherit.aes = FALSE, size = 4.2, hjust = 1
+  )
+
+p_paired
+
+# (Optional) Save
+# ggsave("/Data/Outputs/collagen_paired_spaghetti.pdf", p_paired, width = 7.5, height = 4.5)
+# readr::write_csv(t_tbl_paired, "/Data/Outputs/collagen_paired_ttest_summary.csv")
+
+```
+
+```{r}
+# ---- COL1A1 / COL3A1: non-paired comparison across Tumor_Type ----
+
+# 0) Pick genes and confirm they exist
+genes_target <- c("COL1A1", "COL3A1")
+genes_found  <- base::intersect(genes_target, unique(counts_long$Gene))
+if (length(genes_found) == 0) stop("Neither COL1A1 nor COL3A1 found in counts_long$Gene.")
+if (length(genes_found) < length(genes_target)) {
+  message("Missing genes: ", paste(setdiff(genes_target, genes_found), collapse = ", "))
+}
+
+# 1) Merge Tumor_Type info
+df_expr <- counts_long %>%
+  dplyr::filter(Gene %in% genes_found) %>%
+  dplyr::left_join(
+    meta_wt_gbm %>%
+      dplyr::select(Sample_ID, Tumor_Type),
+    by = "Sample_ID"
+  ) %>%
+  dplyr::filter(!is.na(Tumor_Type))
+
+# 2) Summary stats per group
 expr_summary <- df_expr %>%
-  group_by(Gene, Pri_Rec) %>%
-  summarise(
-    n            = dplyr::n(),
-    mean_log2    = mean(log2_expr, na.rm = TRUE),
-    sd_log2      = sd(log2_expr,   na.rm = TRUE),
-    se_log2      = sd_log2 / sqrt(n),
+  dplyr::group_by(Gene, Tumor_Type) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    mean_log2 = mean(log2_expr, na.rm = TRUE),
+    sd_log2 = sd(log2_expr, na.rm = TRUE),
+    se_log2 = sd_log2 / sqrt(n),
     .groups = "drop"
   )
 
 print(expr_summary)
 
-# 3) Welch t-tests (Pri vs Rec) per gene
-t_tbl <- lapply(split(df_expr, df_expr$Gene), function(d) {
-  if (length(unique(d$Pri_Rec)) < 2) {
-    return(data.frame(Gene = unique(d$Gene), p_value = NA_real_, stat = NA_real_))
-  }
-  tt <- t.test(log2_expr ~ Pri_Rec, data = d, var.equal = FALSE)
-  data.frame(
-    Gene      = unique(d$Gene),
-    p_value   = tt$p.value,
-    statistic = unname(tt$statistic),
-    mean_Pri  = mean(d$log2_expr[d$Pri_Rec == "Pri"], na.rm = TRUE),
-    mean_Rec  = mean(d$log2_expr[d$Pri_Rec == "Rec"], na.rm = TRUE)
+# 3) Statistical tests per gene
+# If there are >2 tumor types → one-way ANOVA + Tukey post-hoc
+# If only 2 types → Welch t-test
+if (length(unique(df_expr$Tumor_Type)) > 2) {
+  # ANOVA
+  test_results <- df_expr %>%
+    dplyr::group_by(Gene) %>%
+    dplyr::do({
+      aov_res <- stats::aov(log2_expr ~ Tumor_Type, data = .)
+      tidy <- broom::tidy(aov_res)
+      tidy
+    }) %>%
+    dplyr::ungroup() %>%
+    dplyr::filter(term == "Tumor_Type")
+  
+  print(test_results)
+  
+  # Tukey post-hoc comparisons
+  tukey_results <- df_expr %>%
+    dplyr::group_by(Gene) %>%
+    dplyr::do({
+      aov_res <- stats::aov(log2_expr ~ Tumor_Type, data = .)
+      tk <- TukeyHSD(aov_res)
+      broom::tidy(tk)
+    }) %>%
+    dplyr::ungroup()
+  
+  print(tukey_results)
+
+} else {
+  # Welch t-test if only two Tumor_Type groups
+  test_results <- df_expr %>%
+    dplyr::group_by(Gene) %>%
+    dplyr::summarise(
+      p_value = stats::t.test(log2_expr ~ Tumor_Type, data = ., var.equal = FALSE)$p.value,
+      mean_diff = diff(rev(tapply(log2_expr, Tumor_Type, mean, na.rm = TRUE))),
+      .groups = "drop"
+    )
+  
+  print(test_results)
+}
+
+# 4) Visualization: box + jitter (per Tumor_Type)
+col_map <- RColorBrewer::brewer.pal(length(unique(df_expr$Tumor_Type)), "Set2")
+
+p_tumor_type <- ggplot(df_expr, aes(x = Tumor_Type, y = log2_expr, fill = Tumor_Type)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.65) +
+  geom_jitter(width = 0.15, size = 2, alpha = 0.8) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  scale_fill_manual(values = col_map) +
+  labs(
+    title = "COL1A1 / COL3A1 log2-normalized expression across Tumor Types",
+    x = "Tumor Type",
+    y = expression(log[2]~normalized~expression)
+  ) +
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.background = element_blank(),
+    axis.text.x = element_text(size = 11, angle = 30, hjust = 1)
   )
-}) %>% bind_rows()
 
-print(t_tbl)
+p_tumor_type
 
-# 4) Plot (box + jitter), per gene, with p-value annotation
-# choose simple, clear colors (limited palette)
+# (Optional)
+# ggsave("/Data/Outputs/collagen_tumorType_boxplot.pdf", p_tumor_type, width = 7.5, height = 4.5)
+# readr::write_csv(expr_summary, "/Data/Outputs/collagen_tumorType_summary.csv")
+
+```
+
+```{r}
+# ---- COL1A1 / COL3A1: Unpaired Pri (GBM) vs Rec (rGBM) within Tumor_Type == "C" ----
+
+# 0) Target genes (update to COL* block below if you want all collagens)
+genes_target <- c("COL1A1", "COL3A1")
+genes_found  <- base::intersect(genes_target, unique(counts_long$Gene))
+if (length(genes_found) == 0) stop("No target COL genes found in counts_long$Gene.")
+if (length(genes_found) < length(genes_target)) {
+  message("Missing genes: ", paste(setdiff(genes_target, genes_found), collapse = ", "))
+}
+
+# 1) Merge Pri_Rec + Tumor_Type; keep only Tumor_Type == "C"
+df_expr_C <- counts_long %>%
+  dplyr::filter(Gene %in% genes_found) %>%
+  dplyr::left_join(
+    meta_wt_gbm %>% dplyr::select(Sample_ID, Pri_Rec, Tumor_Type),
+    by = "Sample_ID"
+  ) %>%
+  dplyr::filter(!is.na(Pri_Rec), !is.na(Tumor_Type), Tumor_Type == "C")
+
+# 2) Summary stats per group (Pri/Rec)
+expr_summary_C <- df_expr_C %>%
+  dplyr::group_by(Gene, Pri_Rec) %>%
+  dplyr::summarise(
+    n         = dplyr::n(),
+    mean_log2 = mean(log2_expr, na.rm = TRUE),
+    sd_log2   = sd(log2_expr,   na.rm = TRUE),
+    se_log2   = sd_log2 / sqrt(n),
+    .groups = "drop"
+  )
+print(expr_summary_C)
+
+# 3) Welch t-test per gene (unpaired)
+tt_C <- df_expr_C %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(
+    p_value   = stats::t.test(log2_expr ~ Pri_Rec, data = ., var.equal = FALSE)$p.value,
+    mean_Pri  = mean(log2_expr[Pri_Rec == "Pri"], na.rm = TRUE),
+    mean_Rec  = mean(log2_expr[Pri_Rec == "Rec"], na.rm = TRUE),
+    delta     = mean_Rec - mean_Pri,  # Rec - Pri
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(p_lab = paste0("Welch t-test p = ",
+                               ifelse(is.na(p_value), "NA", format.pval(p_value, digits = 3, eps = 1e-3))))
+print(tt_C)
+
+# 4) Choose y-positions for labels
+lab_pos_C <- df_expr_C %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(y_max = max(log2_expr, na.rm = TRUE), .groups = "drop") %>%
+  dplyr::left_join(tt_C, by = "Gene") %>%
+  dplyr::mutate(y = y_max + 0.05 * abs(y_max))
+
+# 5) Plot (box + jitter) for Tumor_Type == "C"
 col_map <- c(Pri = "#1F78B4", Rec = "#E31A1C")
 
-# build per-gene p-value labels to annotate on each facet
-p_labs <- t_tbl %>%
-  mutate(label = paste0("Welch t-test p = ", format.pval(p_value, digits = 3, eps = 1e-3)))
+p_C <- ggplot(df_expr_C, aes(x = Pri_Rec, y = log2_expr, fill = Pri_Rec)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.65) +
+  geom_jitter(width = 0.15, size = 2, alpha = 0.85) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  scale_fill_manual(values = col_map) +
+  labs(
+    title = "COL1A1 / COL3A1 expression in Tumor_Type = 'C' (Unpaired Pri vs Rec)",
+    x = NULL, y = expression(log[2]~normalized~expression)
+  ) +
+  theme_classic(base_size = 14) +
+  theme(legend.position = "none",
+        strip.background = element_blank(),
+        axis.text.x = element_text(size = 12)) +
+  geom_text(
+    data = lab_pos_C,
+    aes(x = "Rec", y = y, label = p_lab),
+    inherit.aes = FALSE, size = 4.2, hjust = 1
+  )
 
-# y-positions for labels: place slightly above the max per gene
-y_pos <- df_expr %>%
-  group_by(Gene) %>%
-  summarise(y = max(log2_expr, na.rm = TRUE), .groups = "drop")
+p_C
 
-p_labs <- left_join(p_labs, y_pos, by = "Gene") %>%
-  mutate(y = y + 0.05 * abs(y))  # small padding
+# (Optional) Save
+# ggsave("/Data/Outputs/COL_PrivRec_TumorTypeC_boxjitter.pdf", p_C, width = 7.5, height = 4.5)
+# readr::write_csv(tt_C, "/Data/Outputs/COL_PrivRec_TumorTypeC_Welch_results.csv")
 
-p <- ggplot(df_expr, aes(x = Pri_Rec, y = log2_expr, fill = Pri_Rec)) +
+```
+##### TGFb Signaling in COL low and high tumor regions
+
+```{r}
+tgfb_gene_set <- c(
+  "TGFB1", "TGFB2", "TGFB3",
+  "TGFBR1", "TGFBR2", "TGFBR3",
+  "SMAD1", "SMAD2", "SMAD3", "SMAD4", "SMAD5", "SMAD6", "SMAD7", "SMAD9",
+  "BAMBI", "SKIL", "LTBP1", "THBS1",
+  "SNAI1", "SNAI2", "ZEB1", "ZEB2", "ACTA2",
+  "IL6", "IL11", "CCN2", "PDGFB",
+  "MYC", "JUNB", "ATF3", "COMP"
+)
+
+```
+
+
+```{r}
+# ---- Filter for TGFb genes ----
+tgfb_genes_found <- base::intersect(tgfb_gene_set, unique(counts_long$Gene))
+message("Found ", length(tgfb_genes_found), " of ", length(tgfb_gene_set), " TGFb-related genes in dataset.")
+
+# ---- Compute COL3A1 median and stratify ----
+col3_expr <- counts_long %>%
+  dplyr::filter(Gene == "COL3A1") %>%
+  dplyr::select(Sample_ID, log2_expr)
+
+col3_median <- median(col3_expr$log2_expr, na.rm = TRUE)
+
+col3_groups <- col3_expr %>%
+  dplyr::mutate(COL3A1_group = ifelse(log2_expr >= col3_median, "High", "Low"))
+
+# ---- Merge group info ----
+meta_with_col3 <- meta_wt_gbm %>%
+  dplyr::left_join(col3_groups %>% dplyr::select(Sample_ID, COL3A1_group), by = "Sample_ID") %>%
+  dplyr::filter(!is.na(COL3A1_group))
+
+# ---- Extract TGFb expression data ----
+df_tgfb <- counts_long %>%
+  dplyr::filter(Gene %in% tgfb_genes_found) %>%
+  dplyr::left_join(meta_with_col3 %>% dplyr::select(Sample_ID, COL3A1_group), by = "Sample_ID") %>%
+  dplyr::filter(!is.na(COL3A1_group))
+
+# ---- Welch t-tests: COL3A1 High vs Low ----
+tt_tgfb <- df_tgfb %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(
+    p_value   = stats::t.test(log2_expr ~ COL3A1_group, data = ., var.equal = FALSE)$p.value,
+    mean_High = mean(log2_expr[COL3A1_group == "High"], na.rm = TRUE),
+    mean_Low  = mean(log2_expr[COL3A1_group == "Low"],  na.rm = TRUE),
+    delta     = mean_High - mean_Low,
+    .groups   = "drop"
+  ) %>%
+  dplyr::mutate(adj_p = p.adjust(p_value, method = "BH")) %>%
+  dplyr::arrange(adj_p)
+
+print(tt_tgfb)
+
+```
+
+```{r}
+y_pos <- df_tgfb %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(y = max(log2_expr, na.rm = TRUE) + 0.05 * abs(max(log2_expr, na.rm = TRUE)))
+
+col_map <- c(High = "#E31A1C", Low = "#1F78B4")
+
+p_tgfb <- ggplot(df_tgfb, aes(x = COL3A1_group, y = log2_expr, fill = COL3A1_group)) +
   geom_boxplot(alpha = 0.7, outlier.shape = NA, width = 0.65) +
   geom_jitter(width = 0.15, alpha = 0.8, size = 2) +
   facet_wrap(~ Gene, scales = "free_y") +
   scale_fill_manual(values = col_map) +
   labs(
-    title = "COL1A1 / COL3A1 log2-normalized expression: Pri vs Rec GBM",
-    x = NULL,
+    title = "TGFβ signaling genes by COL3A1 level (High vs Low)",
+    x = "COL3A1 expression group",
     y = expression(log[2]~normalized~expression)
   ) +
   theme_classic(base_size = 14) +
-  theme(legend.position = "none",
-        strip.background = element_blank(),
-        axis.text.x = element_text(size = 12))
+  theme(
+    legend.position = "none",
+    strip.background = element_blank(),
+    axis.text.x = element_text(size = 12)
+  ) +
+  geom_text(
+    data = tt_tgfb %>% dplyr::left_join(y_pos, by = "Gene"),
+    aes(x = "High", y = y, label = paste0("p=", format.pval(p_value, digits = 3, eps = 1e-3))),
+    inherit.aes = FALSE, size = 3.8, hjust = 1
+  )
 
-# add p-value annotations
-p + geom_text(
-  data = p_labs,
-  aes(x = "Rec", y = y, label = label),
-  inherit.aes = FALSE,
-  size = 4.2,
-  hjust = 1
-)
+p_tgfb
 
 ```
+
+
 
 #### Volcano plot
 
@@ -1578,6 +1944,9 @@ wt_deg <- wt_deg %>%
 head(wt_deg)
 
 ```
+
+
+
 
 ```{r}
 # ---- Volcano: Rec vs Pri from wt_deg ----
@@ -1693,4 +2062,10 @@ pheatmap(
 # )
 
 ```
+
+
+
+
+
+
 
