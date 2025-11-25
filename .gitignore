@@ -12,3 +12,6 @@ Inputs/CGGA.mRNAseq_693_clinical.20200506.txt.zip
 Inputs/CGGA_RNAseq_Control_20.txt
 Inputs/CGGA_RNAseq_Control_20.txt.zip
 Inputs/visiumSeuratObj.rds
+Inputs/GLASS/transcript_count_matrix_all_samples.tsv
+Inputs/GLASS/transcript_eff_length_matrix_all_samples.tsv
+Inputs/GLASS/variants.anno.csv
