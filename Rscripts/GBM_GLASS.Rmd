@@ -30,7 +30,9 @@ library(stringr)
 library(ggplot2)
 library(ggrepel)
 library(pheatmap)
-
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(tidyverse)
 ```
 
 ## Load Data
@@ -417,219 +419,377 @@ meta_paired2_clean <- meta_paired2_clean %>%
 #### Subtype Switching
 
 ```{r}
-## ==== Subtype Switching Analysis (Clean Paired GBM IDH-wt) ====
+## ==== CLEAN switch_df without slice(): one PRIMARY + one RECURRENT per patient ====
 
-# 1) Get primary subtype per patient
-primary_subtypes <- meta_paired2_clean %>%
+# One primary subtype per patient
+primary_unique <- meta_paired2_clean %>%
   dplyr::filter(tumor_type == "Primary") %>%
-  dplyr::select(patient, primary_subtype = signature_name)
+  dplyr::group_by(patient) %>%
+  dplyr::summarise(
+    primary_subtype = dplyr::first(signature_name),
+    .groups = "drop"
+  )
 
-# 2) Get recurrent subtype per patient
-recurrent_subtypes <- meta_paired2_clean %>%
+# One recurrent subtype per patient
+recurrent_unique <- meta_paired2_clean %>%
   dplyr::filter(tumor_type == "Recurrent") %>%
-  dplyr::select(patient, recurrent_subtype = signature_name)
+  dplyr::group_by(patient) %>%
+  dplyr::summarise(
+    recurrent_subtype = dplyr::first(signature_name),
+    .groups = "drop"
+  )
 
-# 3) Merge the two
-switch_df <- primary_subtypes %>%
-  inner_join(recurrent_subtypes, by = "patient") %>%
-  mutate(
+# Build clean switch_df (no duplicated patients)
+switch_df <- primary_unique %>%
+  dplyr::inner_join(recurrent_unique, by = "patient") %>%
+  dplyr::mutate(
     switched = primary_subtype != recurrent_subtype,
-    to_mes   = (primary_subtype != "Mesenchymal" & recurrent_subtype == "Mesenchymal")
+    to_mes   = (primary_subtype != "Mesenchymal" &
+                recurrent_subtype == "Mesenchymal")
   )
 
-# 4) Overview
-switch_df
-
+cat("Unique patients in switch_df:", nrow(switch_df), "\n")
+any(duplicated(switch_df$patient))  # should be FALSE
 ```
-```{r}
-## How many switch?
-total_patients <- nrow(switch_df)
-n_switch <- sum(switch_df$switched)
-n_no_switch <- total_patients - n_switch
-
-cat("\nTOTAL patients:", total_patients)
-cat("\nSwitched subtype:", n_switch, sprintf("(%.1f%%)", 100*n_switch/total_patients))
-cat("\nMaintained same subtype:", n_no_switch, sprintf("(%.1f%%)\n", 100*n_no_switch/total_patients))
-
-## How many switch specifically INTO Mesenchymal?
-n_to_mes <- sum(switch_df$to_mes)
-cat("\nSwitched INTO Mesenchymal:", n_to_mes, sprintf("(%.1f%%)\n", 100*n_to_mes/total_patients))
-
-## Table of specific transitions
-table(primary = switch_df$primary_subtype,
-      recurrent = switch_df$recurrent_subtype)
-
-```
-#### Run Limma
 
 ```{r}
-## ==== Identify Mesenchymal transitions (updated) ====
+## ==== Pie charts for ALL subtypes (Primary vs Recurrent) using clean switch_df ====
 
-# 1) Primary subtype per patient
-primary_sub <- meta_paired2_clean %>%
-  dplyr::filter(tumor_type == "Primary") %>%
-  dplyr::select(patient, primary_subtype = signature_name)
+outdir <- "/Data/Outputs/GLSS"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
 
-# 2) Recurrent subtype per patient
-recurrent_sub <- meta_paired2_clean %>%
-  dplyr::filter(tumor_type == "Recurrent") %>%
-  dplyr::select(patient, recurrent_subtype = signature_name)
-
-# 3) Merge into one table
-sub_switch <- primary_sub %>%
-  inner_join(recurrent_sub, by = "patient") %>%
-  mutate(
-    recurrent_is_mes = recurrent_subtype == "Mesenchymal",
-
-    # ANY→Mesenchymal transition
-    any_to_mes = (primary_subtype != "Mesenchymal" & recurrent_subtype == "Mesenchymal"),
-
-    # Mesenchymal → Mesenchymal maintenance
-    mes_to_mes = (primary_subtype == "Mesenchymal" & recurrent_subtype == "Mesenchymal")
+# 1) Convert switch_df to long format
+pie_long <- switch_df %>%
+  tidyr::pivot_longer(
+    cols      = c(primary_subtype, recurrent_subtype),
+    names_to  = "tumor_type",
+    values_to = "subtype"
+  ) %>%
+  dplyr::mutate(
+    tumor_type = ifelse(tumor_type == "primary_subtype", "Primary", "Recurrent"),
+    tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
   )
 
-# Extract the two groups you care about
-any_to_mesenchymal <- sub_switch %>% dplyr::filter(any_to_mes)
-mesenchymal_to_mesenchymal <- sub_switch %>% dplyr::filter(mes_to_mes)
+# 2) Count + percentage
+pie_df <- pie_long %>%
+  dplyr::group_by(tumor_type, subtype) %>%
+  dplyr::summarise(n = n(), .groups = "drop_last") %>%
+  dplyr::mutate(
+    pct   = 100 * n / sum(n),
+    label = paste0(round(pct, 1), "%")
+  ) %>%
+  dplyr::ungroup()
 
-# Output
-cat("\nNon-Mesenchymal → Mesenchymal patients (Classical→MES + Proneural→MES):\n")
-print(any_to_mesenchymal)
+cat("Counts used in pie chart (should be 68 per tumor_type):\n")
+print(pie_df)
 
-cat("\nMesenchymal → Mesenchymal patients:\n")
-print(mesenchymal_to_mesenchymal)
+# ---- SAVE RAW DATA ----
+write.csv(
+  pie_df,
+  file = file.path(outdir, "SubtypeDistribution_Primary_vs_Recurrent.csv"),
+  row.names = FALSE
+)
 
-```
-```{r}
-## Identify primary and recurrent subtype per patient
-primary_sub <- meta_paired2_clean %>%
-  dplyr::filter(tumor_type == "Primary") %>%
-  dplyr::select(patient, primary_subtype = signature_name)
+# 3) Color palette
+subtype_cols <- c(
+  "Classical"   = "#2CA02C",
+  "Proneural"   = "#1F78B4",
+  "Mesenchymal" = "#9467BD"
+)
 
-recurrent_sub <- meta_paired2_clean %>%
-  dplyr::filter(tumor_type == "Recurrent") %>%
-  dplyr::select(patient, recurrent_subtype = signature_name)
-
-# Merge
-sub_switch <- primary_sub %>%
-  inner_join(recurrent_sub, by = "patient") %>%
-  mutate(
-    any_to_mes = (primary_subtype != "Mesenchymal" &
-                  recurrent_subtype == "Mesenchymal"),
-
-    mes_to_mes = (primary_subtype == "Mesenchymal" &
-                  recurrent_subtype == "Mesenchymal")
+# 4) Plot object
+p_subtype <- ggplot(pie_df,
+       aes(x = "", y = pct, fill = subtype)) +
+  geom_col(width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  facet_wrap(~ tumor_type) +
+  scale_fill_manual(values = subtype_cols, name = "Subtype") +
+  geom_text(
+    aes(label = label),
+    position = position_stack(vjust = 0.5),
+    size = 3
+  ) +
+  labs(
+    title = "Subtype Distribution in Paired GBM IDH-wt Cohort",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_bw() +
+  theme(
+    axis.ticks = element_blank(),
+    axis.text  = element_blank(),
+    panel.grid = element_blank(),
+    strip.background = element_rect(fill = "grey90"),
+    plot.title = element_text(hjust = 0.5)
   )
 
-```
+# ---- SAVE FIGURE ----
+ggsave(
+  filename = file.path(outdir, "SubtypeDistribution_Primary_vs_Recurrent.pdf"),
+  plot = p_subtype,
+  width = 7,
+  height = 5
+)
 
-```{r}
-patients_keep <- sub_switch %>%
-  dplyr::filter(any_to_mes | mes_to_mes) %>%
-  pull(patient) %>%
-  unique()
-
-length(patients_keep)   # how many patients included?
-
-```
-```{r}
-meta_mes <- meta_paired2_clean %>%
-  dplyr::filter(patient %in% patients_keep)
-
-counts_mes <- counts_gene_paired2[, meta_mes$sample_id]
-
-# Ensure ordering aligns
-meta_mes <- meta_mes[match(colnames(counts_mes), meta_mes$sample_id), ]
-
-all(colnames(counts_mes) == meta_mes$sample_id)
+# Return the plot to screen
+p_subtype
 
 ```
 
-```{r}
-## --- limma on MES-transition patients ---
 
-# metadata factors
-meta_mes <- meta_mes %>%
-  mutate(
+```{r}
+## ==== Paired DEG: Primary vs Recurrent in the 68 subtype-defined patients ====
+
+# 1) Build a sample-level metadata frame with EXACTLY one Primary and one Recurrent per patient
+meta_deg <- meta_paired2_clean %>%
+  dplyr::filter(patient %in% switch_df$patient) %>%        # keep only the 68 patients in switch_df
+  dplyr::group_by(patient, tumor_type) %>%
+  dplyr::slice(1) %>%                                      # one sample per patient × tumor_type
+  dplyr::ungroup()
+
+cat("Patients in DEG set:", length(unique(meta_deg$patient)), "\n")
+print(table(meta_deg$tumor_type))
+
+# 2) Subset counts to these samples
+counts_deg <- counts_gene_paired2[, meta_deg$sample_id]
+
+# Align metadata order with count matrix
+meta_deg <- meta_deg[match(colnames(counts_deg), meta_deg$sample_id), ]
+stopifnot(all(colnames(counts_deg) == meta_deg$sample_id))
+
+# 3) limma-voom paired design: Recurrent vs Primary
+meta_deg <- meta_deg %>%
+  dplyr::mutate(
     patient    = factor(patient),
     tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
   )
 
-# Build DGEList
-y_mes <- DGEList(counts = counts_mes)
+y_deg <- DGEList(counts = counts_deg)
 
-# Filter low genes
-keep <- rowSums(y_mes$counts) >= 10
-y_mes <- y_mes[keep, , keep.lib.sizes = FALSE]
+keep_deg <- rowSums(y_deg$counts) >= 10
+y_deg <- y_deg[keep_deg, , keep.lib.sizes = FALSE]
 
-# Normalize
-y_mes <- calcNormFactors(y_mes)
+y_deg <- calcNormFactors(y_deg)
 
-# Design
-design_mes <- model.matrix(~ patient + tumor_type, data = meta_mes)
+design_deg <- model.matrix(~ patient + tumor_type, data = meta_deg)
 
-# voom transform
-v_mes <- voom(y_mes, design_mes, plot = FALSE)
+v_deg <- voom(y_deg, design_deg, plot = FALSE)
+fit_deg <- lmFit(v_deg, design_deg)
+fit_deg <- eBayes(fit_deg)
 
-# Fit
-fit_mes <- lmFit(v_mes, design_mes)
-fit_mes <- eBayes(fit_mes)
+limma_deg_68 <- topTable(
+  fit_deg,
+  coef   = "tumor_typeRecurrent",   # Recurrent – Primary
+  number = Inf,
+  sort.by = "P"
+)
 
-# Extract Recurrent vs Primary DEGs
-limma_mes <- topTable(
-  fit_mes,
+# 4) Look at COL1A1 / COL1A2 / COL3A1 in this 68-patient paired DEG
+col_genes <- c("COL1A1", "COL1A2", "COL3A1")
+
+col_limma_68 <- limma_deg_68 %>%
+  tibble::rownames_to_column("gene") %>%
+  dplyr::filter(gene %in% col_genes)
+
+cat("\nCOL genes in 68-patient paired DEG (Recurrent vs Primary):\n")
+print(col_limma_68)
+
+```
+
+```{r}
+## ==== Paired DEG: ONLY Classical/Proneural → Mesenchymal transitions ====
+
+outdir <- "/Data/Outputs/GLSS"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+# 1) Identify CP→MES patients
+cp_mes_patients <- switch_df %>%
+  dplyr::filter(
+    primary_subtype   %in% c("Classical", "Proneural"),
+    recurrent_subtype == "Mesenchymal"
+  ) %>%
+  dplyr::pull(patient) %>%
+  unique()
+
+cat("CP → MES patients:", length(cp_mes_patients), "\n")
+print(cp_mes_patients)
+
+# 2) Build metadata (1 primary + 1 recurrent per CP→MES patient)
+meta_cp_mes <- meta_paired2_clean %>%
+  dplyr::filter(patient %in% cp_mes_patients) %>%
+  dplyr::group_by(patient, tumor_type) %>%
+  dplyr::slice(1) %>%  
+  dplyr::ungroup()
+
+cat("Patients in CP→MES DEG set:", length(unique(meta_cp_mes$patient)), "\n")
+print(table(meta_cp_mes$tumor_type))
+
+# 3) Subset count matrix
+counts_cp_mes <- counts_gene_paired2[, meta_cp_mes$sample_id]
+
+# Ensure order matches
+meta_cp_mes <- meta_cp_mes[match(colnames(counts_cp_mes), meta_cp_mes$sample_id), ]
+stopifnot(all(colnames(counts_cp_mes) == meta_cp_mes$sample_id))
+
+# 4) Paired limma-voom
+meta_cp_mes <- meta_cp_mes %>%
+  dplyr::mutate(
+    patient    = factor(patient),
+    tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
+  )
+
+y_cp <- DGEList(counts = counts_cp_mes)
+
+keep_cp <- rowSums(y_cp$counts) >= 10
+y_cp <- y_cp[keep_cp, , keep.lib.sizes = FALSE]
+
+y_cp <- calcNormFactors(y_cp)
+
+design_cp <- model.matrix(~ patient + tumor_type, data = meta_cp_mes)
+
+v_cp <- voom(y_cp, design_cp, plot = FALSE)
+fit_cp <- lmFit(v_cp, design_cp)
+fit_cp <- eBayes(fit_cp)
+
+limma_cp_mes <- topTable(
+  fit_cp,
   coef   = "tumor_typeRecurrent",
   number = Inf,
   sort.by = "P"
 )
 
-head(limma_mes)
-summary(limma_mes$adj.P.Val)
+# ---- SAVE raw DEG table ----
+write.csv(
+  limma_cp_mes,
+  file = file.path(outdir, "Paired_DEG_CP_to_MES_Recurrent_vs_Primary.csv"),
+  row.names = TRUE
+)
 
-```
-
-```{r}
-# Genes of interest
+# 5) Extract collagen genes
 col_genes <- c("COL1A1", "COL1A2", "COL3A1")
 
-# Extract collagen genes from limma
-col_limma <- limma_mes %>%
-  rownames_to_column("gene") %>%
+col_cp_mes <- limma_cp_mes %>%
+  tibble::rownames_to_column("gene") %>%
   dplyr::filter(gene %in% col_genes)
 
-col_limma
+cat("\nCOL genes in CP→MES paired DEG (Recurrent vs Primary):\n")
+print(col_cp_mes)
 
 ```
-```{r}
-## ===== Paired slope plots for COL1A1 / COL1A2 / COL3A1 (MES-only) =====
 
-# Genes you care about
+```{r}
+## ==== Heatmap: COL1A1/1A2/3A1 + Top 25 DEGs in CP→MES paired cohort ====
+
+library(pheatmap)
+
+outdir <- "/Data/Outputs/GLSS"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+# 1) Define collagen genes
 col_genes <- c("COL1A1", "COL1A2", "COL3A1")
 
-# 1) Extract voom log-expression from MES v_int object
-col_expr_mat <- v_mes$E[rownames(v_mes$E) %in% col_genes, , drop = FALSE]
+# 2) Get top 25 DEGs by adjusted P-value (excluding the collagen genes)
+deg_cp_tbl <- limma_cp_mes %>%
+  tibble::rownames_to_column("gene")
 
-# 2) Long-format dataframe with metadata merged
-col_long_mes <- col_expr_mat %>%
+top25_genes <- deg_cp_tbl %>%
+  dplyr::arrange(adj.P.Val) %>%
+  dplyr::filter(!gene %in% col_genes) %>%
+  dplyr::slice(1:25) %>%
+  dplyr::pull(gene)
+
+# 3) Combine: 3 collagen + top 25 DEGs
+genes_plot <- c(col_genes, top25_genes) %>% unique()
+genes_plot <- genes_plot[genes_plot %in% rownames(v_cp$E)]
+
+# 4) Order samples (Primary then Recurrent within each patient)
+meta_cp_mes <- meta_cp_mes %>%
+  dplyr::arrange(patient, tumor_type)
+
+sample_order <- meta_cp_mes$sample_id
+
+# 5) Expression matrix
+heat_mat <- v_cp$E[genes_plot, sample_order, drop = FALSE]
+
+# 6) Column annotation: tumor type + subtype + patient number
+annot <- meta_cp_mes %>%
+  dplyr::select(sample_id, patient, tumor_type, signature_name) %>%
+  tibble::column_to_rownames("sample_id")
+
+# 7) annotation colors
+subtype_cols <- c(
+  "Classical"   = "#2CA02C",
+  "Proneural"   = "#1F78B4",
+  "Mesenchymal" = "#9467BD"
+)
+
+tumor_cols <- c(
+  "Primary"   = "#BBBBBB",
+  "Recurrent" = "#000000"
+)
+
+ann_colors <- list(
+  tumor_type      = tumor_cols,
+  signature_name  = subtype_cols
+)
+
+# 8) Build plot object (so we can save as PDF)
+heatmap_obj <- pheatmap(
+  heat_mat,
+  annotation_col   = annot,
+  annotation_colors = ann_colors,
+  cluster_rows     = TRUE,
+  cluster_cols     = TRUE,
+  scale            = "row",
+  show_colnames    = FALSE,
+  main             = "CP→MES Paired Cohort: COL Genes + Top 25 DEGs\n(voom log2 expression, row-scaled)",
+  silent           = TRUE   # <-- allows saving later
+)
+
+# 9) Save as PDF
+pdf(file.path(outdir, "Heatmap_CP_to_MES_COL_plus_Top25DEGs.pdf"),
+    width = 8, height = 10)
+grid::grid.newpage()
+grid::grid.draw(heatmap_obj$gtable)
+dev.off()
+
+# Display heatmap to screen
+heatmap_obj
+
+```
+
+```{r}
+## ==== Paired jitter/slope plot for COL1A1 / COL1A2 / COL3A1 (CP→MES cohort) ====
+
+outdir <- "/Data/Outputs/GLSS"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+col_genes <- c("COL1A1", "COL1A2", "COL3A1")
+
+# 1) Extract voom log-expression for these genes
+col_expr_mat_cp <- v_cp$E[rownames(v_cp$E) %in% col_genes, , drop = FALSE]
+
+# 2) Long-format dataframe with metadata
+col_long_cp <- col_expr_mat_cp %>%
   as.data.frame() %>%
-  rownames_to_column("gene") %>%
-  pivot_longer(
-    cols = -gene,
-    names_to = "sample_id",
+  tibble::rownames_to_column("gene") %>%
+  tidyr::pivot_longer(
+    cols      = -gene,
+    names_to  = "sample_id",
     values_to = "expr"
   ) %>%
-  left_join(
-    meta_mes %>% dplyr::select(sample_id, patient, tumor_type, signature_name),
+  dplyr::left_join(
+    meta_cp_mes %>% dplyr::select(sample_id, patient, tumor_type, signature_name),
     by = "sample_id"
   )
 
-# 3) Plot
-ggplot(col_long_mes,
+# 3) Build the plot object
+p_cp_slope <- ggplot(col_long_cp,
        aes(x = tumor_type,
            y = expr,
            group = patient,
            color = signature_name)) +
-  geom_line(alpha = 0.35) +
+  geom_line(alpha = 0.4) +
   geom_point(
     position = position_jitter(width = 0.05, height = 0),
     size = 2,
@@ -642,17 +802,161 @@ ggplot(col_long_mes,
     Mesenchymal = "#9467BD"
   )) +
   labs(
-    title = "Paired Primary → Recurrent Expression (COL1A1 / COL1A2 / COL3A1)\nMES-only Cohort",
-    x = "",
-    y = "voom log2 expression",
+    title = "CP→MES Paired Collagen Expression\n(COL1A1 / COL1A2 / COL3A1, Recurrent vs Primary)",
+    x     = "",
+    y     = "voom log2 expression",
     color = "Subtype"
   ) +
   theme_bw() +
   theme(
-    plot.title = element_text(hjust = 0.5),
-    strip.background = element_rect(fill = "grey90"),
-    legend.position = "right"
+    plot.title      = element_text(hjust = 0.5),
+    strip.background = element_rect(fill = "grey90")
   )
+
+# ---- SAVE AS PDF ----
+ggsave(
+  filename = file.path(outdir, "CP_to_MES_Paired_Collagen_SlopePlot.pdf"),
+  plot = p_cp_slope,
+  width = 8,
+  height = 4
+)
+
+# Display to screen
+p_cp_slope
+
+
+```
+
+```{r}
+## ==== Percentage of CP→MES transitions out of all 68 paired patients ====
+
+# Total paired patients
+total_pairs <- nrow(switch_df)
+
+# CP→MES transitions
+cp_mes_count <- switch_df %>%
+  dplyr::filter(
+    primary_subtype %in% c("Classical", "Proneural"),
+    recurrent_subtype == "Mesenchymal"
+  ) %>%
+  nrow()
+
+# Percentage
+cp_mes_pct <- 100 * cp_mes_count / total_pairs
+
+cat("Total paired patients: ", total_pairs, "\n")
+cat("CP → MES transitions: ", cp_mes_count, "\n")
+cat(sprintf("Percentage CP → MES: %.1f%%\n", cp_mes_pct))
+
+```
+## TGFB analysis
+
+```{r}
+## ==== Per-Gene Paired Stats + Individual Plots for TGF-β Genes (CP→MES cohort) ====
+
+library(limma)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(tibble)
+
+tgfb_gene_set <- c(
+  "TGFB1", "TGFB2", "TGFB3",
+  "TGFBR1", "TGFBR2", "TGFBR3",
+  "SMAD1", "SMAD2", "SMAD3", "SMAD4", "SMAD5", "SMAD6", "SMAD7", "SMAD9",
+  "BAMBI", "SKIL", "LTBP1", "THBS1",
+  "SNAI1", "SNAI2", "ZEB1", "ZEB2", "ACTA2",
+  "IL6", "IL11", "CCN2", "PDGFB",
+  "MYC", "JUNB", "ATF3", "COMP"
+)
+
+# 1) Only keep genes actually in the dataset
+tgfb_available <- tgfb_gene_set[tgfb_gene_set %in% rownames(v_cp$E)]
+cat("Genes found:", length(tgfb_available), "/", length(tgfb_gene_set), "\n")
+
+# 2) Prepare output directory
+outdir <- "/Data/Outputs/GLSS/TGFB_single_plots"
+if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+
+# 3) Loop through each gene
+for (g in tgfb_available) {
+
+  cat("\n====================\n")
+  cat("Gene:", g, "\n")
+  cat("====================\n")
+
+  ## ---- Extract expression vector ----
+  expr_vec <- v_cp$E[g, ]
+
+  ## ---- Build design matrix for paired model ----
+  meta_tmp <- meta_cp_mes %>%
+    mutate(
+      patient    = factor(patient),
+      tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
+    )
+
+  design_tmp <- model.matrix(~ patient + tumor_type, data = meta_tmp)
+
+  fit_tmp <- lmFit(expr_vec, design_tmp)
+  fit_tmp <- eBayes(fit_tmp)
+  tt <- topTable(fit_tmp, coef = "tumor_typeRecurrent", number = 1)
+
+  ## ---- Print stats for this gene ----
+  print(tt %>% dplyr::select(logFC, P.Value, adj.P.Val))
+
+  ## ---- Build long-form for plotting ----
+  df_plot <- data.frame(
+    gene       = g,
+    sample_id  = colnames(v_cp$E),
+    expr       = expr_vec
+  ) %>%
+    left_join(
+      meta_cp_mes %>% select(sample_id, patient, tumor_type, signature_name),
+      by = "sample_id"
+    )
+
+  ## ---- Plot ----
+  p_gene <- ggplot(df_plot,
+                   aes(x = tumor_type, y = expr,
+                       group = patient, color = signature_name)) +
+    geom_line(alpha = 0.35) +
+    geom_point(
+      position = position_jitter(width = 0.05, height = 0),
+      size = 2, alpha = 0.9
+    ) +
+    scale_color_manual(values = c(
+      Classical   = "#2CA02C",
+      Proneural   = "#1F78B4",
+      Mesenchymal = "#9467BD"
+    )) +
+    labs(
+      title = paste0("Paired Expression: ", g, " (CP→MES)"),
+      subtitle = paste0(
+        "logFC = ", round(tt$logFC, 3),
+        ", p = ", signif(tt$P.Value, 3),
+        ", adj.p = ", signif(tt$adj.P.Val, 3)
+      ),
+      x = "",
+      y = "voom log2 expression",
+      color = "Subtype"
+    ) +
+    theme_bw() +
+    theme(
+      plot.title = element_text(hjust = 0.5),
+      strip.background = element_rect(fill = "grey90")
+    )
+
+  ## ---- Save each gene's plot ----
+  ggsave(
+    filename = file.path(outdir, paste0("TGFB_", g, "_paired_plot.pdf")),
+    plot = p_gene,
+    width = 4,
+    height = 4
+  )
+
+  ## ---- Print to screen ----
+  print(p_gene)
+}
 
 ```
 

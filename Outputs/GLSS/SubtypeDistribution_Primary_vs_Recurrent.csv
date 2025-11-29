@@ -1,0 +1,7 @@
+"tumor_type","subtype","n","pct","label"
+"Primary","Classical",32,47.0588235294118,"47.1%"
+"Primary","Mesenchymal",25,36.7647058823529,"36.8%"
+"Primary","Proneural",11,16.1764705882353,"16.2%"
+"Recurrent","Classical",24,35.2941176470588,"35.3%"
+"Recurrent","Mesenchymal",31,45.5882352941176,"45.6%"
+"Recurrent","Proneural",13,19.1176470588235,"19.1%"
