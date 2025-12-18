@@ -33,6 +33,9 @@ library(pheatmap)
 library(clusterProfiler)
 library(org.Hs.eg.db)
 library(tidyverse)
+library(tidyr)
+library(survival)
+library(survminer)
 ```
 
 ## Load Data
@@ -253,710 +256,500 @@ head(counts_gene_paired2[, 1:5])
 summary(as.numeric(counts_gene_paired2))
 
 ```
-#### Run limma
+
 ```{r}
-## --- limma-voom paired differential expression: Recurrent vs Primary ---
+## ==== Paired ΔCOL directionality (Primary → Recurrent) ====
 
-# 1) Ensure metadata is properly typed
-meta_paired2 <- meta_paired2 %>%
-  mutate(
-    patient    = factor(patient),
-    tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
-  )
-
-# 2) Build DGEList from gene-level paired counts
-y <- DGEList(counts = counts_gene_paired2)
-
-# 3) Filter out ultra-lowly expressed genes
-keep <- rowSums(y$counts) >= 10
-y <- y[keep, , keep.lib.sizes = FALSE]
-
-# 4) TMM normalization
-y <- calcNormFactors(y)
-
-# 5) Design matrix: patient (paired blocking term) + tumor_type (effect of interest)
-design <- model.matrix(~ patient + tumor_type, data = meta_paired2)
-
-# 6) Voom transformation
-v <- voom(
-  y,
-  design,
-  plot = FALSE
-)
-
-# 7) Fit linear model
-fit <- lmFit(v, design)
-
-# 8) Empirical Bayes shrinkage
-fit <- eBayes(fit)
-
-# 9) Extract differential expression results (Recurrent vs Primary)
-limma_res <- topTable(
-  fit,
-  coef   = "tumor_typeRecurrent",  # logFC = Recurrent - Primary
-  number = Inf,
-  sort.by = "P"
-)
-
-# View top rows
-head(limma_res)
-
-# Optional: summary of significance
-summary(limma_res$adj.P.Val)
-
-```
-```{r}
-## Save limma results (paired DEGs) as CSV
-outdir <- "/Data/Outputs/GLSS"
+outdir <- "/Data/Outputs/GLSS/Paired_DeltaCOL"
 if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
 
-deg_file <- file.path(outdir, "GLASS_paired_DEGs_Recurrent_vs_Primary_WTGBM.csv")
-write.csv(limma_res, deg_file, row.names = TRUE)
-
-```
-
-
-#### DEG visualizaiton
-
-```{r}
-## Paired slope plots for COL1A1 / COL1A2 / COL3A1 (GBM, IDH-wt only)
-
-# Genes of interest
-col_genes <- c("COL1A1", "COL1A2", "COL3A1")
-
-# 1) Extract voom log-expression for these genes
-col_expr_mat <- v$E[rownames(v$E) %in% col_genes, , drop = FALSE]
-
-# 2) Build long dataframe with sample + metadata
-col_long <- col_expr_mat %>%
-  as.data.frame() %>%
-  rownames_to_column("gene") %>%
-  pivot_longer(
-    cols      = -gene,
-    names_to  = "sample_id",
-    values_to = "expr"
-  ) %>%
-  left_join(
-    meta_paired2 %>% dplyr::select(sample_id, patient, tumor_type),
-    by = "sample_id"
+# 0) Sanity: keep only Primary/Recurrent + required fields
+meta_pair <- meta_paired2 %>%
+  dplyr::filter(tumor_type %in% c("Primary", "Recurrent")) %>%
+  dplyr::mutate(
+    tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent")),
+    # parse recurrence number from tumor_code (R1, R2, ...)
+    recur_num = dplyr::if_else(
+      str_detect(tumor_code, "^R[0-9]+$"),
+      as.integer(str_remove(tumor_code, "^R")),
+      NA_integer_
+    )
   )
 
-# Quick sanity check (optional)
-# table(col_long$gene, col_long$tumor_type)
+# 1) Keep ONLY patients with both Primary and Recurrent
+paired_patients <- meta_pair %>%
+  group_by(patient) %>%
+  summarise(n_types = n_distinct(tumor_type), .groups = "drop") %>%
+  filter(n_types == 2) %>%
+  pull(patient)
 
-# 3) Paired slope plot with jittered points, faceted by gene
-ggplot(col_long, aes(x = tumor_type, y = expr, group = patient)) +
-  geom_line(alpha = 0.3) +
-  geom_point(
-    position = position_jitter(width = 0.05, height = 0),
-    size     = 1.8,
-    alpha    = 0.8
-  ) +
+meta_pair <- meta_pair %>%
+  filter(patient %in% paired_patients)
+
+cat("Paired patients (have TP + R):", n_distinct(meta_pair$patient), "\n")
+
+# 2) Choose ONE Primary + ONE Recurrent per patient
+# Rule:
+#   - Primary: take first TP encountered
+#   - Recurrent: take earliest recurrence number (R1 before R2), tie-break by first encountered
+meta_pair_1 <- meta_pair %>%
+  group_by(patient, tumor_type) %>%
+  arrange(
+    dplyr::if_else(is.na(recur_num), 9999L, recur_num),
+    sample_id
+  ) %>%
+  slice(1) %>%
+  ungroup()
+
+cat("Chosen samples:\n")
+print(table(meta_pair_1$tumor_type))
+
+# 3) Build logCPM from gene-level paired counts (selected samples only)
+counts_pair <- counts_gene_paired2[, meta_pair_1$sample_id, drop = FALSE]
+stopifnot(all(colnames(counts_pair) == meta_pair_1$sample_id))
+
+y <- DGEList(counts = counts_pair)
+y <- calcNormFactors(y)
+logcpm <- cpm(y, log = TRUE, prior.count = 1)
+
+# 4) Compute Δ per collagen gene and mean ΔCOL
+col_genes <- c("COL1A1", "COL1A2", "COL3A1")
+present <- col_genes[col_genes %in% rownames(logcpm)]
+cat("Collagen genes present:", paste(present, collapse = ", "), "\n")
+stopifnot(length(present) >= 2)
+
+expr_long <- logcpm[present, , drop = FALSE] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("gene") %>%
+  tidyr::pivot_longer(-gene, names_to = "sample_id", values_to = "logcpm") %>%
+  left_join(meta_pair_1 %>% select(sample_id, patient, tumor_type), by = "sample_id")
+
+delta_tbl <- expr_long %>%
+  tidyr::pivot_wider(
+    id_cols = c(patient, gene),
+    names_from = tumor_type,
+    values_from = logcpm
+  ) %>%
+  mutate(delta = Recurrent - Primary)
+
+delta_score <- delta_tbl %>%
+  group_by(patient) %>%
+  summarise(
+    delta_COL_mean = mean(delta, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# 5) Directionality summary + sign/binomial test (per gene + mean score)
+dir_stats_gene <- delta_tbl %>%
+  group_by(gene) %>%
+  summarise(
+    n_patients = sum(!is.na(delta)),
+    pct_up     = mean(delta > 0, na.rm = TRUE) * 100,
+    median_delta = median(delta, na.rm = TRUE),
+    p_sign = binom.test(
+      x = sum(delta > 0, na.rm = TRUE),
+      n = sum(!is.na(delta)),
+      p = 0.5,
+      alternative = "two.sided"
+    )$p.value,
+    .groups = "drop"
+  )
+
+dir_stats_mean <- tibble(
+  gene = "COL_mean",
+  n_patients = sum(!is.na(delta_score$delta_COL_mean)),
+  pct_up = mean(delta_score$delta_COL_mean > 0, na.rm = TRUE) * 100,
+  median_delta = median(delta_score$delta_COL_mean, na.rm = TRUE),
+  p_sign = binom.test(
+    x = sum(delta_score$delta_COL_mean > 0, na.rm = TRUE),
+    n = sum(!is.na(delta_score$delta_COL_mean)),
+    p = 0.5,
+    alternative = "two.sided"
+  )$p.value
+)
+
+dir_stats <- bind_rows(dir_stats_gene, dir_stats_mean)
+
+cat("\nDirectionality (Δ = Recurrent − Primary):\n")
+print(dir_stats)
+
+write.csv(
+  dir_stats,
+  file = file.path(outdir, "Directionality_DeltaCOL_SignTests.csv"),
+  row.names = FALSE
+)
+
+# 6) Paired slope plots (one panel per gene)
+p_slope <- ggplot(expr_long, aes(x = tumor_type, y = logcpm, group = patient)) +
+  geom_line(alpha = 0.25) +
+  geom_point(position = position_jitter(width = 0.05, height = 0),
+             size = 1.8, alpha = 0.85) +
   facet_wrap(~ gene, nrow = 1, scales = "free_y") +
   labs(
-    title = "Paired Primary → Recurrent Expression (COL1A1 / COL1A2 / COL3A1)\nGBM, IDH-wildtype",
-    x     = "",
-    y     = "voom log2 expression"
+    title = "Paired collagen expression: Primary → Recurrent (IDH-WT GBM)",
+    subtitle = "Each line is one patient; Δ computed as Recurrent − Primary",
+    x = "",
+    y = "logCPM"
   ) +
   theme_bw() +
   theme(
-    plot.title      = element_text(hjust = 0.5),
+    plot.title = element_text(hjust = 0.5),
     strip.background = element_rect(fill = "grey90"),
     legend.position = "none"
   )
 
-```
-
-### Filter transcriptional subtype
-
-```{r}
-## Reload subtype file cleanly and compute best subtype per sample
-
-sub <- read.delim(
-  file.path(glass_dir, "analysis_transcriptional_subtypes.tsv"),
-  stringsAsFactors = FALSE
-)
-
-sub_sig <- sub %>%
-  dplyr::filter(p_value < 0.05)
-
-sub_best_sig <- sub_sig %>%
-  group_by(aliquot_barcode) %>%
-  slice_max(order_by = enrichment_score, n = 1) %>%
-  ungroup() %>%
-  dplyr::select(aliquot_barcode, signature_name)
-
-
-```
-
-```{r}
-meta_paired2 <- meta_paired2 %>%
-  left_join(sub_best_sig, by = c("sample_id" = "aliquot_barcode"))
-
-```
-
-```{r}
-meta_paired2_clean <- meta_paired2 %>%
-  dplyr::filter(!is.na(signature_name))
-
-```
-
-```{r}
-paired_patients_sub <- meta_paired2_clean %>%
-  group_by(patient) %>%
-  summarise(n_types = n_distinct(tumor_type), .groups = "drop") %>%
-  dplyr::filter(n_types == 2) %>%
-  pull(patient)
-
-```
-
-```{r}
-meta_paired2_clean <- meta_paired2_clean %>%
-  dplyr::filter(patient %in% paired_patients_sub)
-
-```
-
-#### Subtype Switching
-
-```{r}
-## ==== CLEAN switch_df without slice(): one PRIMARY + one RECURRENT per patient ====
-
-# One primary subtype per patient
-primary_unique <- meta_paired2_clean %>%
-  dplyr::filter(tumor_type == "Primary") %>%
-  dplyr::group_by(patient) %>%
-  dplyr::summarise(
-    primary_subtype = dplyr::first(signature_name),
-    .groups = "drop"
-  )
-
-# One recurrent subtype per patient
-recurrent_unique <- meta_paired2_clean %>%
-  dplyr::filter(tumor_type == "Recurrent") %>%
-  dplyr::group_by(patient) %>%
-  dplyr::summarise(
-    recurrent_subtype = dplyr::first(signature_name),
-    .groups = "drop"
-  )
-
-# Build clean switch_df (no duplicated patients)
-switch_df <- primary_unique %>%
-  dplyr::inner_join(recurrent_unique, by = "patient") %>%
-  dplyr::mutate(
-    switched = primary_subtype != recurrent_subtype,
-    to_mes   = (primary_subtype != "Mesenchymal" &
-                recurrent_subtype == "Mesenchymal")
-  )
-
-cat("Unique patients in switch_df:", nrow(switch_df), "\n")
-any(duplicated(switch_df$patient))  # should be FALSE
-```
-
-```{r}
-## ==== Pie charts for ALL subtypes (Primary vs Recurrent) using clean switch_df ====
-
-outdir <- "/Data/Outputs/GLSS"
-if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
-
-# 1) Convert switch_df to long format
-pie_long <- switch_df %>%
-  tidyr::pivot_longer(
-    cols      = c(primary_subtype, recurrent_subtype),
-    names_to  = "tumor_type",
-    values_to = "subtype"
-  ) %>%
-  dplyr::mutate(
-    tumor_type = ifelse(tumor_type == "primary_subtype", "Primary", "Recurrent"),
-    tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
-  )
-
-# 2) Count + percentage
-pie_df <- pie_long %>%
-  dplyr::group_by(tumor_type, subtype) %>%
-  dplyr::summarise(n = n(), .groups = "drop_last") %>%
-  dplyr::mutate(
-    pct   = 100 * n / sum(n),
-    label = paste0(round(pct, 1), "%")
-  ) %>%
-  dplyr::ungroup()
-
-cat("Counts used in pie chart (should be 68 per tumor_type):\n")
-print(pie_df)
-
-# ---- SAVE RAW DATA ----
-write.csv(
-  pie_df,
-  file = file.path(outdir, "SubtypeDistribution_Primary_vs_Recurrent.csv"),
-  row.names = FALSE
-)
-
-# 3) Color palette
-subtype_cols <- c(
-  "Classical"   = "#2CA02C",
-  "Proneural"   = "#1F78B4",
-  "Mesenchymal" = "#9467BD"
-)
-
-# 4) Plot object
-p_subtype <- ggplot(pie_df,
-       aes(x = "", y = pct, fill = subtype)) +
-  geom_col(width = 1, color = "white") +
-  coord_polar(theta = "y") +
-  facet_wrap(~ tumor_type) +
-  scale_fill_manual(values = subtype_cols, name = "Subtype") +
-  geom_text(
-    aes(label = label),
-    position = position_stack(vjust = 0.5),
-    size = 3
-  ) +
-  labs(
-    title = "Subtype Distribution in Paired GBM IDH-wt Cohort",
-    x = NULL,
-    y = NULL
-  ) +
-  theme_bw() +
-  theme(
-    axis.ticks = element_blank(),
-    axis.text  = element_blank(),
-    panel.grid = element_blank(),
-    strip.background = element_rect(fill = "grey90"),
-    plot.title = element_text(hjust = 0.5)
-  )
-
-# ---- SAVE FIGURE ----
 ggsave(
-  filename = file.path(outdir, "SubtypeDistribution_Primary_vs_Recurrent.pdf"),
-  plot = p_subtype,
-  width = 7,
-  height = 5
-)
-
-# Return the plot to screen
-p_subtype
-
-```
-
-
-```{r}
-## ==== Paired DEG: Primary vs Recurrent in the 68 subtype-defined patients ====
-
-# 1) Build a sample-level metadata frame with EXACTLY one Primary and one Recurrent per patient
-meta_deg <- meta_paired2_clean %>%
-  dplyr::filter(patient %in% switch_df$patient) %>%        # keep only the 68 patients in switch_df
-  dplyr::group_by(patient, tumor_type) %>%
-  dplyr::slice(1) %>%                                      # one sample per patient × tumor_type
-  dplyr::ungroup()
-
-cat("Patients in DEG set:", length(unique(meta_deg$patient)), "\n")
-print(table(meta_deg$tumor_type))
-
-# 2) Subset counts to these samples
-counts_deg <- counts_gene_paired2[, meta_deg$sample_id]
-
-# Align metadata order with count matrix
-meta_deg <- meta_deg[match(colnames(counts_deg), meta_deg$sample_id), ]
-stopifnot(all(colnames(counts_deg) == meta_deg$sample_id))
-
-# 3) limma-voom paired design: Recurrent vs Primary
-meta_deg <- meta_deg %>%
-  dplyr::mutate(
-    patient    = factor(patient),
-    tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
-  )
-
-y_deg <- DGEList(counts = counts_deg)
-
-keep_deg <- rowSums(y_deg$counts) >= 10
-y_deg <- y_deg[keep_deg, , keep.lib.sizes = FALSE]
-
-y_deg <- calcNormFactors(y_deg)
-
-design_deg <- model.matrix(~ patient + tumor_type, data = meta_deg)
-
-v_deg <- voom(y_deg, design_deg, plot = FALSE)
-fit_deg <- lmFit(v_deg, design_deg)
-fit_deg <- eBayes(fit_deg)
-
-limma_deg_68 <- topTable(
-  fit_deg,
-  coef   = "tumor_typeRecurrent",   # Recurrent – Primary
-  number = Inf,
-  sort.by = "P"
-)
-
-# 4) Look at COL1A1 / COL1A2 / COL3A1 in this 68-patient paired DEG
-col_genes <- c("COL1A1", "COL1A2", "COL3A1")
-
-col_limma_68 <- limma_deg_68 %>%
-  tibble::rownames_to_column("gene") %>%
-  dplyr::filter(gene %in% col_genes)
-
-cat("\nCOL genes in 68-patient paired DEG (Recurrent vs Primary):\n")
-print(col_limma_68)
-
-```
-
-```{r}
-## ==== Paired DEG: ONLY Classical/Proneural → Mesenchymal transitions ====
-
-outdir <- "/Data/Outputs/GLSS"
-if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
-
-# 1) Identify CP→MES patients
-cp_mes_patients <- switch_df %>%
-  dplyr::filter(
-    primary_subtype   %in% c("Classical", "Proneural"),
-    recurrent_subtype == "Mesenchymal"
-  ) %>%
-  dplyr::pull(patient) %>%
-  unique()
-
-cat("CP → MES patients:", length(cp_mes_patients), "\n")
-print(cp_mes_patients)
-
-# 2) Build metadata (1 primary + 1 recurrent per CP→MES patient)
-meta_cp_mes <- meta_paired2_clean %>%
-  dplyr::filter(patient %in% cp_mes_patients) %>%
-  dplyr::group_by(patient, tumor_type) %>%
-  dplyr::slice(1) %>%  
-  dplyr::ungroup()
-
-cat("Patients in CP→MES DEG set:", length(unique(meta_cp_mes$patient)), "\n")
-print(table(meta_cp_mes$tumor_type))
-
-# 3) Subset count matrix
-counts_cp_mes <- counts_gene_paired2[, meta_cp_mes$sample_id]
-
-# Ensure order matches
-meta_cp_mes <- meta_cp_mes[match(colnames(counts_cp_mes), meta_cp_mes$sample_id), ]
-stopifnot(all(colnames(counts_cp_mes) == meta_cp_mes$sample_id))
-
-# 4) Paired limma-voom
-meta_cp_mes <- meta_cp_mes %>%
-  dplyr::mutate(
-    patient    = factor(patient),
-    tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
-  )
-
-y_cp <- DGEList(counts = counts_cp_mes)
-
-keep_cp <- rowSums(y_cp$counts) >= 10
-y_cp <- y_cp[keep_cp, , keep.lib.sizes = FALSE]
-
-y_cp <- calcNormFactors(y_cp)
-
-design_cp <- model.matrix(~ patient + tumor_type, data = meta_cp_mes)
-
-v_cp <- voom(y_cp, design_cp, plot = FALSE)
-fit_cp <- lmFit(v_cp, design_cp)
-fit_cp <- eBayes(fit_cp)
-
-limma_cp_mes <- topTable(
-  fit_cp,
-  coef   = "tumor_typeRecurrent",
-  number = Inf,
-  sort.by = "P"
-)
-
-# ---- SAVE raw DEG table ----
-write.csv(
-  limma_cp_mes,
-  file = file.path(outdir, "Paired_DEG_CP_to_MES_Recurrent_vs_Primary.csv"),
-  row.names = TRUE
-)
-
-# 5) Extract collagen genes
-col_genes <- c("COL1A1", "COL1A2", "COL3A1")
-
-col_cp_mes <- limma_cp_mes %>%
-  tibble::rownames_to_column("gene") %>%
-  dplyr::filter(gene %in% col_genes)
-
-cat("\nCOL genes in CP→MES paired DEG (Recurrent vs Primary):\n")
-print(col_cp_mes)
-
-```
-
-```{r}
-## ==== Heatmap: COL1A1/1A2/3A1 + Top 25 DEGs in CP→MES paired cohort ====
-
-library(pheatmap)
-
-outdir <- "/Data/Outputs/GLSS"
-if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
-
-# 1) Define collagen genes
-col_genes <- c("COL1A1", "COL1A2", "COL3A1")
-
-# 2) Get top 25 DEGs by adjusted P-value (excluding the collagen genes)
-deg_cp_tbl <- limma_cp_mes %>%
-  tibble::rownames_to_column("gene")
-
-top25_genes <- deg_cp_tbl %>%
-  dplyr::arrange(adj.P.Val) %>%
-  dplyr::filter(!gene %in% col_genes) %>%
-  dplyr::slice(1:25) %>%
-  dplyr::pull(gene)
-
-# 3) Combine: 3 collagen + top 25 DEGs
-genes_plot <- c(col_genes, top25_genes) %>% unique()
-genes_plot <- genes_plot[genes_plot %in% rownames(v_cp$E)]
-
-# 4) Order samples (Primary then Recurrent within each patient)
-meta_cp_mes <- meta_cp_mes %>%
-  dplyr::arrange(patient, tumor_type)
-
-sample_order <- meta_cp_mes$sample_id
-
-# 5) Expression matrix
-heat_mat <- v_cp$E[genes_plot, sample_order, drop = FALSE]
-
-# 6) Column annotation: tumor type + subtype + patient number
-annot <- meta_cp_mes %>%
-  dplyr::select(sample_id, patient, tumor_type, signature_name) %>%
-  tibble::column_to_rownames("sample_id")
-
-# 7) annotation colors
-subtype_cols <- c(
-  "Classical"   = "#2CA02C",
-  "Proneural"   = "#1F78B4",
-  "Mesenchymal" = "#9467BD"
-)
-
-tumor_cols <- c(
-  "Primary"   = "#BBBBBB",
-  "Recurrent" = "#000000"
-)
-
-ann_colors <- list(
-  tumor_type      = tumor_cols,
-  signature_name  = subtype_cols
-)
-
-# 8) Build plot object (so we can save as PDF)
-heatmap_obj <- pheatmap(
-  heat_mat,
-  annotation_col   = annot,
-  annotation_colors = ann_colors,
-  cluster_rows     = TRUE,
-  cluster_cols     = TRUE,
-  scale            = "row",
-  show_colnames    = FALSE,
-  main             = "CP→MES Paired Cohort: COL Genes + Top 25 DEGs\n(voom log2 expression, row-scaled)",
-  silent           = TRUE   # <-- allows saving later
-)
-
-# 9) Save as PDF
-pdf(file.path(outdir, "Heatmap_CP_to_MES_COL_plus_Top25DEGs.pdf"),
-    width = 8, height = 10)
-grid::grid.newpage()
-grid::grid.draw(heatmap_obj$gtable)
-dev.off()
-
-# Display heatmap to screen
-heatmap_obj
-
-```
-
-```{r}
-## ==== Paired jitter/slope plot for COL1A1 / COL1A2 / COL3A1 (CP→MES cohort) ====
-
-outdir <- "/Data/Outputs/GLSS"
-if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
-
-col_genes <- c("COL1A1", "COL1A2", "COL3A1")
-
-# 1) Extract voom log-expression for these genes
-col_expr_mat_cp <- v_cp$E[rownames(v_cp$E) %in% col_genes, , drop = FALSE]
-
-# 2) Long-format dataframe with metadata
-col_long_cp <- col_expr_mat_cp %>%
-  as.data.frame() %>%
-  tibble::rownames_to_column("gene") %>%
-  tidyr::pivot_longer(
-    cols      = -gene,
-    names_to  = "sample_id",
-    values_to = "expr"
-  ) %>%
-  dplyr::left_join(
-    meta_cp_mes %>% dplyr::select(sample_id, patient, tumor_type, signature_name),
-    by = "sample_id"
-  )
-
-# 3) Build the plot object
-p_cp_slope <- ggplot(col_long_cp,
-       aes(x = tumor_type,
-           y = expr,
-           group = patient,
-           color = signature_name)) +
-  geom_line(alpha = 0.4) +
-  geom_point(
-    position = position_jitter(width = 0.05, height = 0),
-    size = 2,
-    alpha = 0.9
-  ) +
-  facet_wrap(~ gene, nrow = 1, scales = "free_y") +
-  scale_color_manual(values = c(
-    Classical   = "#2CA02C",
-    Proneural   = "#1F78B4",
-    Mesenchymal = "#9467BD"
-  )) +
-  labs(
-    title = "CP→MES Paired Collagen Expression\n(COL1A1 / COL1A2 / COL3A1, Recurrent vs Primary)",
-    x     = "",
-    y     = "voom log2 expression",
-    color = "Subtype"
-  ) +
-  theme_bw() +
-  theme(
-    plot.title      = element_text(hjust = 0.5),
-    strip.background = element_rect(fill = "grey90")
-  )
-
-# ---- SAVE AS PDF ----
-ggsave(
-  filename = file.path(outdir, "CP_to_MES_Paired_Collagen_SlopePlot.pdf"),
-  plot = p_cp_slope,
-  width = 8,
+  filename = file.path(outdir, "PairedSlope_COL1A1_COL1A2_COL3A1.pdf"),
+  plot = p_slope,
+  width = 10,
   height = 4
 )
 
-# Display to screen
-p_cp_slope
+print(p_slope)
 
-
-```
-
-```{r}
-## ==== Percentage of CP→MES transitions out of all 68 paired patients ====
-
-# Total paired patients
-total_pairs <- nrow(switch_df)
-
-# CP→MES transitions
-cp_mes_count <- switch_df %>%
-  dplyr::filter(
-    primary_subtype %in% c("Classical", "Proneural"),
-    recurrent_subtype == "Mesenchymal"
-  ) %>%
-  nrow()
-
-# Percentage
-cp_mes_pct <- 100 * cp_mes_count / total_pairs
-
-cat("Total paired patients: ", total_pairs, "\n")
-cat("CP → MES transitions: ", cp_mes_count, "\n")
-cat(sprintf("Percentage CP → MES: %.1f%%\n", cp_mes_pct))
-
-```
-## TGFB analysis
-
-```{r}
-## ==== Per-Gene Paired Stats + Individual Plots for TGF-β Genes (CP→MES cohort) ====
-
-library(limma)
-library(ggplot2)
-library(dplyr)
-library(tidyr)
-library(tibble)
-
-tgfb_gene_set <- c(
-  "TGFB1", "TGFB2", "TGFB3",
-  "TGFBR1", "TGFBR2", "TGFBR3",
-  "SMAD1", "SMAD2", "SMAD3", "SMAD4", "SMAD5", "SMAD6", "SMAD7", "SMAD9",
-  "BAMBI", "SKIL", "LTBP1", "THBS1",
-  "SNAI1", "SNAI2", "ZEB1", "ZEB2", "ACTA2",
-  "IL6", "IL11", "CCN2", "PDGFB",
-  "MYC", "JUNB", "ATF3", "COMP"
+# 7) Save deltas for downstream steps (Options 2 & 3)
+write.csv(
+  delta_tbl,
+  file = file.path(outdir, "DeltaTable_PerGene_PerPatient.csv"),
+  row.names = FALSE
+)
+write.csv(
+  delta_score,
+  file = file.path(outdir, "DeltaScore_MeanCollagen_PerPatient.csv"),
+  row.names = FALSE
 )
 
-# 1) Only keep genes actually in the dataset
-tgfb_available <- tgfb_gene_set[tgfb_gene_set %in% rownames(v_cp$E)]
-cat("Genes found:", length(tgfb_available), "/", length(tgfb_gene_set), "\n")
+```
+```{r}
+## ==== Option 2: Concordance across collagen deltas ====
 
-# 2) Prepare output directory
-outdir <- "/Data/Outputs/GLSS/TGFB_single_plots"
-if (!dir.exists(outdir)) dir.create(outdir, recursive = TRUE)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
 
-# 3) Loop through each gene
-for (g in tgfb_available) {
+outdir2 <- "/Data/Outputs/GLSS/Paired_DeltaCOL/Option2_Concordance"
+if (!dir.exists(outdir2)) dir.create(outdir2, recursive = TRUE)
 
-  cat("\n====================\n")
-  cat("Gene:", g, "\n")
-  cat("====================\n")
+# 0) Make sure delta_tbl exists + has what we need
+stopifnot(exists("delta_tbl"))
+stopifnot(all(c("patient","gene","delta") %in% colnames(delta_tbl)))
 
-  ## ---- Extract expression vector ----
-  expr_vec <- v_cp$E[g, ]
+# 1) Wide Δ table: one row per patient, one column per gene
+delta_wide <- delta_tbl %>%
+  filter(gene %in% c("COL1A1","COL1A2","COL3A1")) %>%
+  select(patient, gene, delta) %>%
+  tidyr::pivot_wider(names_from = gene, values_from = delta)
 
-  ## ---- Build design matrix for paired model ----
-  meta_tmp <- meta_cp_mes %>%
-    mutate(
-      patient    = factor(patient),
-      tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
-    )
+cat("Patients with Δ table:", nrow(delta_wide), "\n")
+print(colSums(!is.na(delta_wide[, c("COL1A1","COL1A2","COL3A1")])))
 
-  design_tmp <- model.matrix(~ patient + tumor_type, data = meta_tmp)
+# 2) Helper to compute correlation stats for a pair
+cor_pair <- function(df, x, y) {
+  d <- df %>% select(all_of(c(x, y))) %>% na.omit()
+  if (nrow(d) < 5) return(NULL)
 
-  fit_tmp <- lmFit(expr_vec, design_tmp)
-  fit_tmp <- eBayes(fit_tmp)
-  tt <- topTable(fit_tmp, coef = "tumor_typeRecurrent", number = 1)
+  pear <- cor.test(d[[x]], d[[y]], method = "pearson")
+  spear <- cor.test(d[[x]], d[[y]], method = "spearman")
 
-  ## ---- Print stats for this gene ----
-  print(tt %>% dplyr::select(logFC, P.Value, adj.P.Val))
-
-  ## ---- Build long-form for plotting ----
-  df_plot <- data.frame(
-    gene       = g,
-    sample_id  = colnames(v_cp$E),
-    expr       = expr_vec
-  ) %>%
-    left_join(
-      meta_cp_mes %>% select(sample_id, patient, tumor_type, signature_name),
-      by = "sample_id"
-    )
-
-  ## ---- Plot ----
-  p_gene <- ggplot(df_plot,
-                   aes(x = tumor_type, y = expr,
-                       group = patient, color = signature_name)) +
-    geom_line(alpha = 0.35) +
-    geom_point(
-      position = position_jitter(width = 0.05, height = 0),
-      size = 2, alpha = 0.9
-    ) +
-    scale_color_manual(values = c(
-      Classical   = "#2CA02C",
-      Proneural   = "#1F78B4",
-      Mesenchymal = "#9467BD"
-    )) +
-    labs(
-      title = paste0("Paired Expression: ", g, " (CP→MES)"),
-      subtitle = paste0(
-        "logFC = ", round(tt$logFC, 3),
-        ", p = ", signif(tt$P.Value, 3),
-        ", adj.p = ", signif(tt$adj.P.Val, 3)
-      ),
-      x = "",
-      y = "voom log2 expression",
-      color = "Subtype"
-    ) +
-    theme_bw() +
-    theme(
-      plot.title = element_text(hjust = 0.5),
-      strip.background = element_rect(fill = "grey90")
-    )
-
-  ## ---- Save each gene's plot ----
-  ggsave(
-    filename = file.path(outdir, paste0("TGFB_", g, "_paired_plot.pdf")),
-    plot = p_gene,
-    width = 4,
-    height = 4
+  tibble(
+    x = x,
+    y = y,
+    n = nrow(d),
+    pearson_r = unname(pear$estimate),
+    pearson_p = pear$p.value,
+    spearman_rho = unname(spear$estimate),
+    spearman_p = spear$p.value
   )
-
-  ## ---- Print to screen ----
-  print(p_gene)
 }
 
+pairs <- list(
+  c("COL1A1","COL3A1"),
+  c("COL1A1","COL1A2"),
+  c("COL1A2","COL3A1")
+)
+
+cor_tbl <- bind_rows(lapply(pairs, \(p) cor_pair(delta_wide, p[1], p[2])))
+
+cat("\nΔCOL concordance correlations:\n")
+print(cor_tbl)
+
+write.csv(
+  cor_tbl,
+  file = file.path(outdir2, "DeltaCOL_CorrelationTable.csv"),
+  row.names = FALSE
+)
+
+# 3) Plot function
+plot_pair <- function(df, x, y) {
+  d <- df %>% select(patient, all_of(c(x, y))) %>% na.omit()
+
+  # annotation from Pearson
+  pear <- cor.test(d[[x]], d[[y]], method = "pearson")
+
+  p <- ggplot(d, aes(x = .data[[x]], y = .data[[y]])) +
+    geom_hline(yintercept = 0, linetype = 2, alpha = 0.5) +
+    geom_vline(xintercept = 0, linetype = 2, alpha = 0.5) +
+    geom_point(alpha = 0.8, size = 2) +
+    geom_smooth(method = "lm", se = TRUE) +
+    labs(
+      title = paste0("Δ", y, " vs Δ", x, "  (Recurrent − Primary)"),
+      subtitle = paste0(
+        "Pearson r = ", round(unname(pear$estimate), 3),
+        ", p = ", signif(pear$p.value, 3),
+        ", n = ", nrow(d)
+      ),
+      x = paste0("Δ", x, " (logCPM)"),
+      y = paste0("Δ", y, " (logCPM)")
+    ) +
+    theme_bw() +
+    theme(plot.title = element_text(hjust = 0.5))
+
+  p
+}
+
+# 4) Make + save plots
+p_13 <- plot_pair(delta_wide, "COL1A1","COL3A1")
+p_12 <- plot_pair(delta_wide, "COL1A1","COL1A2")
+p_23 <- plot_pair(delta_wide, "COL1A2","COL3A1")
+
+ggsave(file.path(outdir2, "DeltaScatter_COL1A1_vs_COL3A1.pdf"), p_13, width = 6, height = 5)
+ggsave(file.path(outdir2, "DeltaScatter_COL1A1_vs_COL1A2.pdf"), p_12, width = 6, height = 5)
+ggsave(file.path(outdir2, "DeltaScatter_COL1A2_vs_COL3A1.pdf"), p_23, width = 6, height = 5)
+
+print(p_13)
+print(p_12)
+print(p_23)
+
+# 5) Optional: “direction concordance” (same sign) summary
+dir_concord <- function(df, x, y) {
+  d <- df %>% select(all_of(c(x, y))) %>% na.omit()
+  same <- mean(sign(d[[x]]) == sign(d[[y]])) * 100
+  tibble(x = x, y = y, n = nrow(d), pct_same_sign = same)
+}
+
+dir_tbl <- bind_rows(lapply(pairs, \(p) dir_concord(delta_wide, p[1], p[2])))
+
+cat("\nSame-sign concordance (% of patients where deltas share sign):\n")
+print(dir_tbl)
+
+write.csv(
+  dir_tbl,
+  file = file.path(outdir2, "DeltaCOL_SameSignConcordance.csv"),
+  row.names = FALSE
+)
+
 ```
+
+```{r}
+## ==== Option 3 (Chunk 3A): Recurrent-only DE by ΔCOL induction status ====
+
+library(dplyr)
+library(tidyr)
+library(edgeR)
+library(limma)
+
+outdir3 <- "/Data/Outputs/GLSS/Option3_DeltaCOL_Subset/RecurrentOnly_DE"
+if (!dir.exists(outdir3)) dir.create(outdir3, recursive = TRUE)
+
+# 0) Require objects from Option A1/Option 2 pipeline
+stopifnot(exists("delta_score"))     # patient-level deltas (has delta_COL_mean)
+stopifnot(exists("meta_paired2"))    # sample-level paired metadata
+stopifnot(exists("counts_gene_paired2"))  # gene x sample matrix for paired cohort
+
+# 1) Define ΔCOL group at patient level
+delta_groups <- delta_score %>%
+  mutate(
+    delta_group = ifelse(delta_COL_mean > 0, "Induced", "NotInduced"),
+    delta_group = factor(delta_group, levels = c("NotInduced", "Induced"))
+  ) %>%
+  select(patient, delta_COL_mean, delta_group)
+
+cat("Patients by ΔCOL group:\n")
+print(table(delta_groups$delta_group))
+
+# 2) Build a clean paired metadata set (1 Primary + 1 Recurrent per patient)
+meta_pair3 <- meta_paired2 %>%
+  filter(!is.na(tumor_type)) %>%
+  mutate(
+    tumor_type = factor(tumor_type, levels = c("Primary", "Recurrent"))
+  ) %>%
+  group_by(patient, tumor_type) %>%
+  slice(1) %>%          # <-- consistent rule
+  ungroup()
+
+# Keep only patients that have BOTH timepoints
+paired_patients3 <- meta_pair3 %>%
+  group_by(patient) %>%
+  summarise(n_types = n_distinct(tumor_type), .groups = "drop") %>%
+  filter(n_types == 2) %>%
+  pull(patient)
+
+meta_pair3 <- meta_pair3 %>% filter(patient %in% paired_patients3)
+
+# 3) Recurrent-only samples and attach ΔCOL group
+meta_rec3 <- meta_pair3 %>%
+  filter(tumor_type == "Recurrent") %>%
+  inner_join(delta_groups, by = "patient")
+
+cat("\nRecurrent samples in DE:", nrow(meta_rec3), "\n")
+print(table(meta_rec3$delta_group))
+
+# 4) Subset gene-level counts to recurrent-only samples
+counts_rec3 <- counts_gene_paired2[, meta_rec3$sample_id, drop = FALSE]
+stopifnot(all(colnames(counts_rec3) == meta_rec3$sample_id))
+
+# 5) limma-voom DE: Induced vs NotInduced (Recurrent only)
+y3 <- DGEList(counts = counts_rec3)
+
+keep3 <- rowSums(y3$counts) >= 10
+y3 <- y3[keep3, , keep.lib.sizes = FALSE]
+
+y3 <- calcNormFactors(y3)
+
+design3 <- model.matrix(~ delta_group, data = meta_rec3)
+v3 <- voom(y3, design3, plot = FALSE)
+fit3 <- lmFit(v3, design3)
+fit3 <- eBayes(fit3)
+
+res_rec_delta <- topTable(
+  fit3,
+  coef = "delta_groupInduced",
+  number = Inf,
+  sort.by = "P"
+)
+
+cat("\nTop genes up in ΔCOL-Induced recurrent tumors:\n")
+print(head(res_rec_delta, 10))
+
+# 6) Quick sanity: COL genes should be higher in Induced recurrences (but not guaranteed)
+col_check <- c("COL1A1","COL1A2","COL3A1")
+col_check <- col_check[col_check %in% rownames(res_rec_delta)]
+cat("\nCollagen genes in recurrent-only DE (Induced vs NotInduced):\n")
+print(res_rec_delta[col_check, c("logFC","P.Value","adj.P.Val"), drop = FALSE])
+
+# 7) Save results + metadata used
+write.csv(
+  res_rec_delta,
+  file = file.path(outdir3, "DE_RecurrentOnly_Induced_vs_NotInduced.csv"),
+  row.names = TRUE
+)
+
+write.csv(
+  meta_rec3,
+  file = file.path(outdir3, "Meta_RecurrentOnly_With_DeltaGroup.csv"),
+  row.names = FALSE
+)
+
+```
+
+```{r}
+## ==== Option 3B: GSEA (GO BP) for Recurrent-only DE: Induced vs NotInduced ====
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+
+stopifnot(exists("res_rec_delta"))  # from Option 3A
+outdir3 <- "/Data/Outputs/GLSS/Option3_DeltaCOL_Subset/RecurrentOnly_DE"
+if (!dir.exists(outdir3)) dir.create(outdir3, recursive = TRUE)
+
+# 1) Rank genes by limma t-statistic (best for GSEA)
+gene_ranks <- res_rec_delta$t
+names(gene_ranks) <- rownames(res_rec_delta)
+gene_ranks <- sort(gene_ranks, decreasing = TRUE)
+
+# 2) Map SYMBOL -> ENTREZID
+map <- bitr(
+  names(gene_ranks),
+  fromType = "SYMBOL",
+  toType   = "ENTREZID",
+  OrgDb    = org.Hs.eg.db
+)
+
+# 3) Build ranked list keyed by ENTREZID
+gene_ranks_entrez <- gene_ranks[map$SYMBOL]
+names(gene_ranks_entrez) <- map$ENTREZID
+
+# de-duplicate Entrez IDs (keep first occurrence)
+gene_ranks_entrez <- gene_ranks_entrez[!duplicated(names(gene_ranks_entrez))]
+gene_ranks_entrez <- sort(gene_ranks_entrez, decreasing = TRUE)
+
+cat("Ranked genes after mapping:", length(gene_ranks_entrez), "\n")
+
+# 4) Run GSEA (GO Biological Process)
+gsea_go_rec <- gseGO(
+  geneList     = gene_ranks_entrez,
+  OrgDb        = org.Hs.eg.db,
+  ont          = "BP",
+  keyType      = "ENTREZID",
+  minGSSize    = 10,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = FALSE
+)
+
+gsea_go_rec_df <- as.data.frame(gsea_go_rec)
+
+# 5) Print top pathways enriched in Induced (positive NES)
+cat("\nTop GO BP enriched in ΔCOL-Induced recurrent tumors (positive NES):\n")
+print(
+  gsea_go_rec_df %>%
+    filter(NES > 0) %>%
+    arrange(p.adjust) %>%
+    select(ID, Description, NES, p.adjust) %>%
+    head(25)
+)
+
+# 6) Save full table + a dotplot PDF
+write.csv(
+  gsea_go_rec_df,
+  file = file.path(outdir3, "GSEA_GO_BP_RecurrentOnly_Induced_vs_NotInduced.csv"),
+  row.names = FALSE
+)
+
+pdf(file.path(outdir3, "GSEA_GO_BP_Dotplot_RecurrentOnly_Induced_vs_NotInduced.pdf"),
+    width = 11, height = 6)
+print(dotplot(gsea_go_rec, showCategory = 20))
+dev.off()
+
+```
+
+```{r}
+## ==== Option 3C-1: NES summary plot (positive NES only) ====
+
+library(dplyr)
+library(ggplot2)
+
+stopifnot(exists("gsea_go_rec_df"))
+
+outdir3 <- "/Data/Outputs/GLSS/Option3_DeltaCOL_Subset/RecurrentOnly_DE"
+
+top_pos <- gsea_go_rec_df %>%
+  filter(NES > 0) %>%
+  arrange(p.adjust) %>%
+  slice(1:15) %>%
+  mutate(Description = reorder(Description, NES))
+
+p_nes <- ggplot(top_pos, aes(x = Description, y = NES)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Biological programs enriched in collagen-induced recurrent GBM",
+    subtitle = "Recurrent-only GSEA: ΔCOL-Induced vs NotInduced",
+    x = NULL,
+    y = "Normalized Enrichment Score (NES)"
+  ) +
+  theme_bw()
+
+ggsave(
+  file.path(outdir3, "GSEA_NES_Top15_Positive_RecurrentOnly.pdf"),
+  p_nes,
+  width = 10,
+  height = 6
+)
+
+print(p_nes)
+
+```
+
 
