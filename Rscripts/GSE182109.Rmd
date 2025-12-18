@@ -1,0 +1,166 @@
+---
+title: "GSE182109"
+output: html_document
+---
+
+# GSE182109 scRNAseq Analysis
+
+## Library
+```{r}
+library(Seurat)
+library(stringr)
+```
+
+## Load Data
+
+```{r}
+
+data_root <- "/Data/Inputs/GSE182109"
+
+# list immediate subfolders (should be GSM* folders if you reorganized)
+sample_dirs <- list.dirs(data_root, full.names = TRUE, recursive = FALSE)
+
+# keep only GSM sample folders
+sample_dirs <- sample_dirs[grepl("^GSM[0-9]+_", basename(sample_dirs))]
+
+cat("Found", length(sample_dirs), "sample folders\n")
+head(basename(sample_dirs), 10)
+
+# sanity check: pick the first sample and list its files
+if (length(sample_dirs) > 0) {
+  cat("\nExample sample:", basename(sample_dirs[1]), "\n")
+  print(list.files(sample_dirs[1]))
+}
+
+```
+## QC
+
+Set parameters
+
+```{r}
+qc_params <- list(
+  min_features = 300,
+  max_features = 6000,
+  min_counts   = 500,
+  max_mt       = 20
+)
+```
+
+QC filter function
+```{r}
+qc_filter <- function(s, p) {
+  subset(
+    s,
+    subset =
+      nFeature_RNA >= p$min_features &
+      nFeature_RNA <= p$max_features &
+      nCount_RNA   >= p$min_counts &
+      percent.mt   <= p$max_mt
+  )
+}
+
+```
+
+```{r}
+
+parse_sample_meta <- function(sample_id) {
+  # Example: GSM5518596_rGBM-01-A
+  rest <- str_split(sample_id, "_", simplify = TRUE)[2]
+
+  tumor_group <- str_extract(rest, "^[A-Za-z]+")
+  patient     <- str_match(rest, "-([0-9]{1,2})")[,2]
+  replicate   <- str_extract(rest, "[^-]+$")
+
+  list(
+    tumor_group = tumor_group,
+    patient     = patient,
+    replicate   = replicate
+  )
+}
+
+```
+
+Load and QC all samples
+
+```{r}
+
+data_root <- "/Data/Inputs/GSE182109"
+sample_dirs <- list.dirs(data_root, recursive = FALSE, full.names = TRUE)
+sample_dirs <- sample_dirs[grepl("^GSM", basename(sample_dirs))]
+
+seu_list <- list()
+
+for (d in sample_dirs) {
+
+  sample_id <- basename(d)
+  message("Loading ", sample_id)
+
+  # Load counts
+  counts <- Read10X(data.dir = d)
+
+  s <- CreateSeuratObject(
+    counts = counts,
+    project = "GSE182109",
+    min.cells = 3
+  )
+
+  # Add metadata
+  meta <- parse_sample_meta(sample_id)
+  s$sample_id   <- sample_id
+  s$tumor_group <- meta$tumor_group
+  s$patient     <- meta$patient
+  s$replicate   <- meta$replicate
+
+  # QC metrics
+  s[["percent.mt"]] <- PercentageFeatureSet(s, pattern = "^MT-")
+
+  # Store pre-QC cell count
+  s$preQC_cells <- ncol(s)
+
+  # Apply QC
+  s <- qc_filter(s, qc_params)
+
+  seu_list[[sample_id]] <- s
+
+  # Free memory aggressively
+  rm(counts)
+  gc()
+}
+
+```
+
+### Drop LGG Samples
+
+```{r}
+# check groups present
+table(sapply(seu_list, function(x) unique(x$tumor_group)))
+
+seu_list_gbm <- seu_list[
+  sapply(seu_list, function(x) unique(x$tumor_group) != "LGG")
+]
+
+length(seu_list_gbm)
+
+```
+
+```{r}
+rm(seu_list)
+gc()
+
+```
+## Normalize and find variable features
+
+```{r}
+length(seu_list_gbm)
+table(sapply(seu_list_gbm, function(x) unique(x$tumor_group)))
+
+```
+
+```{r}
+seu_list_gbm <- lapply(seu_list_gbm, function(s) {
+  s <- NormalizeData(s, normalization.method = "LogNormalize", scale.factor = 1e4, verbose = FALSE)
+  s
+})
+
+```
+
