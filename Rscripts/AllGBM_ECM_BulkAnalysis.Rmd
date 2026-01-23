@@ -1,0 +1,1263 @@
+---
+title: "GBM ECM Analysis"
+output: html_document
+date: "2025-07-31"
+---
+
+# GBM ECM Analysis
+
+## RNAseq ECM Analysis
+
+To look at the gene expression of ECM genes across primary and recurrent GBM in CGGA data sets. 
+
+### Library
+
+```{r}
+library(tidyr)
+library(dplyr)
+library(httr)
+library(pheatmap)
+library(biomaRt)
+library(limma)
+library(ggplot2)
+library(ggrepel)
+library(tidyverse)
+library(tibble)
+library(readr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(survival)
+library(survminer)
+library(readxl)
+```
+### Download and upload input data
+
+Data downloaded from https://www.cgga.org.cn/download.jsp
+
+Data that are already downloaded are not downloaded again. Chunks are skipped using , eval = FALSE in chunk. 
+
+#### Download mRNAseq_693 data
+
+```{r, eval = FALSE}
+# Download expression data from STAR+RSEM (FPKM Value) 
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_693.RSEM-genes.20200506.txt.zip&type=mRNAseq_693&time=20200506",
+  write_disk(file.path("/Data/Inputs", "CGGA.mRNAseq_693.RSEM-genes.20200506.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_693.RSEM-genes.20200506.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+
+# Download clinical meta data
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_693_clinical.20200506.txt.zip&type=mRNAseq_693_clinical&time=20200506",
+  write_disk(file.path("/Data/Inputs", "CGGA.mRNAseq_693_clinical.20200506.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_693_clinical.20200506.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+
+```
+#### Download mRNAseq_325 data
+
+```{r, eval = FALSE}
+# Download expression data from STAR+RSEM (FPKM Value)
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_325.RSEM-genes.20200506.txt.zip&type=mRNAseq_325&time=20200506",
+  write_disk(file.path("/Data/Inputs", "CGGA.mRNAseq_325.RSEM-genes.20200506.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_325.RSEM-genes.20200506.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+
+# Download clinical meta data
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200506/CGGA.mRNAseq_325_clinical.20200506.txt.zip&type=mRNAseq_325_clinical&time=20200506",
+  write_disk(file.path("/Data/Inputs", "CGGA.mRNAseq_325_clinical.20200506.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA.mRNAseq_325_clinical.20200506.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+```
+#### Download non-glioma control gene expression
+
+```{r, eval = FALSE}
+# Download expression data from STAR+RSEM (FPKM Value)
+GET(
+  "https://www.cgga.org.cn/download?file=download/20200614/CGGA_RNAseq_Control_20.txt.zip&type=CGGA_RNAseq_Control_20&time=20200614",
+  write_disk(file.path("/Data/Inputs", "CGGA_RNAseq_Control_20.txt.zip"), overwrite = TRUE),
+  timeout(600)
+)
+
+# Unzip file and remove __MACOSX folder
+unzip(file.path("/Data/Inputs", "CGGA_RNAseq_Control_20.txt.zip"), exdir = "/Data/Inputs")
+unlink(file.path("/Data/Inputs", "__MACOSX"), recursive = TRUE, force = TRUE)
+
+```
+
+### Filtering data to only include samples that follow WHO 2021 classification. 
+
+
+Removed Samples that are not classified as GBM.
+
+```{r}
+# Load CGGA-693 metadata
+cgga693_meta <- read.delim("/Data/Inputs/CGGA.mRNAseq_693_clinical.20200506.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
+
+# Load CGGA-325 metadata
+cgga325_meta <- read.delim("/Data/Inputs/CGGA.mRNAseq_325_clinical.20200506.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
+```
+
+```{r}
+
+# Filter CGGA-693: keep GBM/rGBM, remove IDH mutant, remove 1p19q codel
+cgga693_meta_gbm <- cgga693_meta %>%
+  filter(tolower(Histology) %in% c("gbm", "rgbm")) %>%
+  filter(tolower(IDH_mutation_status) != "mutant") %>%
+  filter(tolower(`1p19q_codeletion_status`) != "codel")
+
+# Filter CGGA-325: keep GBM/rGBM, remove IDH mutant, remove 1p19q codel
+cgga325_meta_gbm <- cgga325_meta %>%
+  filter(tolower(Histology) %in% c("gbm", "rgbm")) %>%
+  filter(tolower(IDH_mutation_status) != "mutant") %>%
+  filter(tolower(`1p19q_codeletion_status`) != "codel")
+```
+
+The meta data shows many columns describing the phenotype of each sample. Within the meta data, irradiation status is listed as 0 or 1. Gene expression profile of ECM genes should be analyzed between recurrent tumors that received irradiation and tumors that did not. This may give insight into irradiation induced ECM change. 
+
+### Add filters to gene expression data
+
+```{r}
+# Load CGGA-693 gene expression data
+cgga693_expr <- read.delim("/Data/Inputs/CGGA.mRNAseq_693.RSEM-genes.20200506.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
+
+# Load CGGA-325 gene expression data
+cgga325_expr <- read.delim("/Data/Inputs/CGGA.mRNAseq_325.RSEM-genes.20200506.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
+```
+
+#### Filter expression data using filtered meta data
+
+There is a problem using select() function, so the code below specifies to use dplyr 
+
+```{r}
+# cgga 693 filter
+ids_693 <- intersect(colnames(cgga693_expr)[-1], cgga693_meta_gbm$CGGA_ID)
+
+cgga693_expr_filt <- cgga693_expr %>%
+  dplyr::select(Gene_Name, dplyr::all_of(ids_693))
+
+cgga693_meta_gbm_ord <- cgga693_meta_gbm %>%
+  dplyr::filter(CGGA_ID %in% ids_693) %>%
+  dplyr::slice(match(ids_693, CGGA_ID))
+
+# cgga 325 filter
+ids_325 <- intersect(colnames(cgga325_expr)[-1], cgga325_meta_gbm$CGGA_ID)
+
+cgga325_expr_filt <- cgga325_expr %>%
+  dplyr::select(Gene_Name, dplyr::all_of(ids_325))
+
+cgga325_meta_gbm_ord <- cgga325_meta_gbm %>%
+  dplyr::filter(CGGA_ID %in% ids_325) %>%
+  dplyr::slice(match(ids_325, CGGA_ID))
+```
+
+### Load non-glioma control to environment
+
+```{r}
+# Load the control expression data
+control_expr <- read.delim("/Data/Inputs/CGGA_RNAseq_Control_20.txt",
+                           header = TRUE,
+                           check.names = FALSE,
+                           stringsAsFactors = FALSE)
+```
+
+
+### Load GO ECM Gene set
+
+```{r}
+# ECM genes from GO:0031012 
+
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+ecm_genes_raw <- getBM(
+  attributes = c("hgnc_symbol", "ensembl_gene_id", "go_id", "name_1006"),
+  filters    = "go",
+  values     = "GO:0031012",  
+  mart       = ensembl
+)
+
+# Clean to unique, non-empty human symbols
+ecm_genes_tbl <- ecm_genes_raw %>%
+  dplyr::filter(!is.na(hgnc_symbol), nzchar(hgnc_symbol)) %>%
+  dplyr::distinct(hgnc_symbol, .keep_all = FALSE)
+
+# Final for filtering expression
+ecm_gene_list <- unique(ecm_genes_tbl$hgnc_symbol)
+```
+
+### Merge all Genes and Data
+```{r}
+# ---- Harmonize control column name (as you already do later) ----
+control_expr <- control_expr %>%
+  dplyr::rename(Gene_Name = gene_name)
+
+# ---- Deduplicate genes within each cohort BEFORE merging ----
+cgga693_all <- cgga693_expr_filt %>%
+  dplyr::mutate(Gene_Name = toupper(Gene_Name)) %>%
+  dplyr::distinct(Gene_Name, .keep_all = TRUE)
+
+cgga325_all <- cgga325_expr_filt %>%
+  dplyr::mutate(Gene_Name = toupper(Gene_Name)) %>%
+  dplyr::distinct(Gene_Name, .keep_all = TRUE)
+
+control_all <- control_expr %>%
+  dplyr::mutate(Gene_Name = toupper(Gene_Name)) %>%
+  dplyr::distinct(Gene_Name, .keep_all = TRUE)
+
+# ---- Intersect to common genes across all three (still ALL genes) ----
+common_genes_all <- Reduce(intersect, list(
+  cgga693_all$Gene_Name,
+  cgga325_all$Gene_Name,
+  control_all$Gene_Name
+))
+
+cgga693_all_common <- cgga693_all %>%
+  dplyr::filter(Gene_Name %in% common_genes_all) %>%
+  dplyr::arrange(Gene_Name)
+
+cgga325_all_common <- cgga325_all %>%
+  dplyr::filter(Gene_Name %in% common_genes_all) %>%
+  dplyr::arrange(Gene_Name)
+
+control_all_common <- control_all %>%
+  dplyr::filter(Gene_Name %in% common_genes_all) %>%
+  dplyr::arrange(Gene_Name)
+
+# ---- Ensure unique sample IDs across cohorts (add suffixes only if needed) ----
+samp_693 <- setdiff(colnames(cgga693_all_common), "Gene_Name")
+samp_325 <- setdiff(colnames(cgga325_all_common), "Gene_Name")
+samp_ctl <- setdiff(colnames(control_all_common), "Gene_Name")
+
+overlap_693_325 <- intersect(samp_693, samp_325)
+overlap_693_ctl  <- intersect(samp_693, samp_ctl)
+overlap_325_ctl  <- intersect(samp_325, samp_ctl)
+
+if (length(overlap_693_325) > 0 || length(overlap_693_ctl) > 0) {
+  colnames(cgga693_all_common)[match(samp_693, colnames(cgga693_all_common))] <- paste0(samp_693, "_693")
+}
+if (length(overlap_693_325) > 0 || length(overlap_325_ctl) > 0) {
+  colnames(cgga325_all_common)[match(samp_325, colnames(cgga325_all_common))] <- paste0(samp_325, "_325")
+}
+if (length(overlap_693_ctl) > 0 || length(overlap_325_ctl) > 0) {
+  colnames(control_all_common)[match(samp_ctl, colnames(control_all_common))] <- paste0(samp_ctl, "_CTRL")
+}
+
+# ---- Merge ALL genes by Gene_Name ----
+merged_expr_all <- Reduce(
+  function(x, y) dplyr::inner_join(x, y, by = "Gene_Name"),
+  list(cgga693_all_common, cgga325_all_common, control_all_common)
+)
+
+stopifnot(!anyDuplicated(merged_expr_all$Gene_Name))
+stopifnot(sum(duplicated(colnames(merged_expr_all))) == 0)
+
+```
+
+##### Merge meta data
+
+```{r}
+# --- MERGE META DATA (with survival) ---
+
+
+# 'merged_expr_all' already built above
+merged_samples <- colnames(merged_expr_all)[-1]
+
+# Base meta frames (Group/Cohort)
+meta693 <- cgga693_meta %>%
+  dplyr::transmute(
+    sample_id = CGGA_ID,
+    group  = dplyr::if_else(tolower(Histology) == "rgbm", "rGBM", "GBM"),
+    cohort = "CGGA693"
+  )
+
+meta325 <- cgga325_meta %>%
+  dplyr::transmute(
+    sample_id = CGGA_ID,
+    group  = dplyr::if_else(tolower(Histology) == "rgbm", "rGBM", "GBM"),
+    cohort = "CGGA325"
+  )
+
+ctl_ids <- setdiff(colnames(control_all_common), "Gene_Name")
+metaCTL <- tibble::tibble(
+  sample_id = ctl_ids,
+  group  = "Control",
+  cohort = "Control"
+)
+
+# Helper: append suffix ONLY if present in merged sample IDs
+add_suffix_if_needed <- function(df, suffix) {
+  needs_suffix <- any(grepl(paste0(suffix, "$"), merged_samples))
+  if (needs_suffix) df$sample_id <- paste0(df$sample_id, suffix)
+  df
+}
+
+meta693 <- add_suffix_if_needed(meta693, "_693")
+meta325 <- add_suffix_if_needed(meta325, "_325")
+metaCTL <- add_suffix_if_needed(metaCTL, "_CTRL")
+
+# Combine base meta and keep only samples that exist in merged expression
+sample_meta_all <- dplyr::bind_rows(meta693, meta325, metaCTL) %>%
+  dplyr::filter(sample_id %in% merged_samples) %>%
+  dplyr::distinct(sample_id, .keep_all = TRUE)
+
+# Add radio/chemo
+meta693_extra <- cgga693_meta %>%
+  dplyr::select(
+    CGGA_ID,
+    `Radio_status (treated=1;un-treated=0)`,
+    `Chemo_status (TMZ treated=1;un-treated=0)`
+  ) %>%
+  dplyr::rename(
+    sample_id   = CGGA_ID,
+    Radio_status = `Radio_status (treated=1;un-treated=0)`,
+    Chemo_status = `Chemo_status (TMZ treated=1;un-treated=0)`
+  ) %>% add_suffix_if_needed("_693")
+
+meta325_extra <- cgga325_meta %>%
+  dplyr::select(
+    CGGA_ID,
+    `Radio_status (treated=1;un-treated=0)`,
+    `Chemo_status (TMZ treated=1;un-treated=0)`
+  ) %>%
+  dplyr::rename(
+    sample_id   = CGGA_ID,
+    Radio_status = `Radio_status (treated=1;un-treated=0)`,
+    Chemo_status = `Chemo_status (TMZ treated=1;un-treated=0)`
+  ) %>% add_suffix_if_needed("_325")
+
+metaCTL_extra <- tibble::tibble(
+  sample_id = ctl_ids,
+  Radio_status = NA_integer_,
+  Chemo_status = NA_integer_
+) %>% add_suffix_if_needed("_CTRL")
+
+# ---- NEW: bring in survival (OS_days, OS_event) ----
+surv693 <- cgga693_meta %>%
+  dplyr::transmute(
+    sample_id = CGGA_ID,
+    OS_days   = suppressWarnings(as.numeric(OS)),
+    OS_event  = suppressWarnings(as.numeric(`Censor (alive=0; dead=1)`))
+  ) %>% add_suffix_if_needed("_693")
+
+surv325 <- cgga325_meta %>%
+  dplyr::transmute(
+    sample_id = CGGA_ID,
+    OS_days   = suppressWarnings(as.numeric(OS)),
+    OS_event  = suppressWarnings(as.numeric(`Censor (alive=0; dead=1)`))
+  ) %>% add_suffix_if_needed("_325")
+
+survCTL <- tibble::tibble(
+  sample_id = ctl_ids,
+  OS_days   = NA_real_,
+  OS_event  = NA_real_
+) %>% add_suffix_if_needed("_CTRL")
+
+# Merge everything into sample_meta_all
+sample_meta_all <- sample_meta_all %>%
+  dplyr::left_join(dplyr::bind_rows(meta693_extra, meta325_extra, metaCTL_extra), by = "sample_id") %>%
+  dplyr::left_join(dplyr::bind_rows(surv693, surv325, survCTL), by = "sample_id")
+
+# Sanity checks
+stopifnot(setequal(sample_meta_all$sample_id, merged_samples))
+message("Survival rows with data: ", sum(!is.na(sample_meta_all$OS_days)), 
+        " | events present: ", sum(!is.na(sample_meta_all$OS_event)))
+
+# (Optional) a convenience in years for plotting tables
+sample_meta_all <- sample_meta_all %>%
+  dplyr::mutate(OS_years = ifelse(!is.na(OS_days), OS_days / 365.25, NA_real_))
+
+```
+
+### Normalization and QC
+
+```{r}
+# Wide genes x samples matrix
+expr_mat_all <- merged_expr_all %>%
+  tibble::column_to_rownames("Gene_Name") %>%
+  as.matrix()
+
+# Align meta row order to columns exactly
+sample_meta_all <- sample_meta_all %>%
+  dplyr::slice(match(colnames(expr_mat_all), sample_id))
+stopifnot(identical(sample_meta_all$sample_id, colnames(expr_mat_all)))
+
+# Log2 transform for QC/visualization
+expr_log2_all <- log2(expr_mat_all + 1)
+
+# Long table for QC plots
+expr_all_long <- expr_log2_all %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene_Name") %>%
+  tidyr::pivot_longer(-Gene_Name, names_to = "sample_id", values_to = "log2_expr") %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::mutate(
+    group  = factor(group,  levels = c("Control", "GBM", "rGBM")),
+    cohort = factor(cohort, levels = c("Control", "CGGA693", "CGGA325"))
+  )
+
+# QC: per-sample distributions
+ggplot(expr_all_long, aes(x = sample_id, y = log2_expr, fill = group)) +
+  geom_boxplot(outlier.size = 0.5, width = 0.6) +
+  facet_grid(~ cohort, scales = "free_x", space = "free_x") +
+  labs(title = "ALL genes: per-sample log2(FPKM+1) distributions",
+       x = "Sample", y = "log2 expression") +
+  theme_bw(base_size = 11) +
+  theme(axis.text.x = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.position = "top")
+
+```
+#### Batch effect correction
+
+```{r}
+# Indices
+idx_tumor   <- which(sample_meta_all$group != "Control")
+idx_control <- which(sample_meta_all$group == "Control")
+
+expr_tumor_all   <- expr_log2_all[, idx_tumor, drop = FALSE]
+expr_control_all <- expr_log2_all[, idx_control, drop = FALSE]
+
+tumor_meta <- sample_meta_all[idx_tumor, , drop = FALSE] %>%
+  dplyr::mutate(group = factor(group, levels = c("GBM","rGBM")))
+
+batch_tumor  <- factor(tumor_meta$cohort)
+design_tumor <- model.matrix(~ group, data = tumor_meta)
+
+expr_tumor_adj_all <- limma::removeBatchEffect(expr_tumor_all,
+                                               batch = batch_tumor,
+                                               design = design_tumor)
+
+# Recombine (keep original sample order)
+expr_adj_all <- expr_log2_all
+expr_adj_all[, idx_tumor]   <- expr_tumor_adj_all
+expr_adj_all[, idx_control] <- expr_control_all
+
+# Quick PCA check before/after
+keep_genes <- apply(expr_log2_all, 1, var) > 0
+X_before <- t(expr_log2_all[keep_genes, , drop = FALSE])
+X_after  <- t(expr_adj_all[keep_genes,  , drop = FALSE])
+
+pca_before <- prcomp(X_before, center = TRUE, scale. = TRUE)
+pca_after  <- prcomp(X_after,  center = TRUE, scale. = TRUE)
+
+ve_b <- (pca_before$sdev^2) / sum(pca_before$sdev^2)
+ve_a <- (pca_after$sdev^2)  / sum(pca_after$sdev^2)
+
+df_b <- as.data.frame(pca_before$x[, 1:2]) %>%
+  tibble::rownames_to_column("sample_id") %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::mutate(state = "Before (log2 FPKM)")
+
+df_a <- as.data.frame(pca_after$x[, 1:2]) %>%
+  tibble::rownames_to_column("sample_id") %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::mutate(state = "After (tumor-only adj)")
+
+group_cols <- c(Control = "grey40", GBM = "#1f77b4", rGBM = "#d62728")
+
+ggplot(df_b, aes(PC1, PC2, color = group, shape = cohort)) +
+  geom_point(size = 2, alpha = 0.9) +
+  scale_color_manual(values = group_cols) +
+  labs(title = "PCA BEFORE batch correction",
+       x = paste0("PC1 (", round(100*ve_b[1], 1), "%)"),
+       y = paste0("PC2 (", round(100*ve_b[2], 1), "%)")) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(), legend.position = "top")
+
+ggplot(df_a, aes(PC1, PC2, color = group, shape = cohort)) +
+  geom_point(size = 2, alpha = 0.9) +
+  scale_color_manual(values = group_cols) +
+  labs(title = "PCA AFTER tumor-only batch correction",
+       x = paste0("PC1 (", round(100*ve_a[1], 1), "%)"),
+       y = paste0("PC2 (", round(100*ve_a[2], 1), "%)")) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(), legend.position = "top")
+
+```
+
+### DEG Analysis pre-Gene list
+
+```{r}
+# ============================================================
+# CHUNK 1: Sample setup for Control vs All GBM
+# ============================================================
+
+stopifnot(exists("expr_adj_all"), exists("sample_meta_all"))
+
+# Keep only Control + tumor samples
+meta_deg <- sample_meta_all %>%
+  dplyr::filter(group %in% c("Control", "GBM", "rGBM")) %>%
+  dplyr::mutate(
+    TumorStatus = ifelse(group == "Control", "Control", "GBM"),
+    TumorStatus = factor(TumorStatus, levels = c("Control", "GBM")),
+    cohort = factor(cohort)
+  )
+
+# Expression matrix subset
+X_deg <- expr_adj_all[, meta_deg$sample_id, drop = FALSE]
+
+# Hard checks (these must pass)
+stopifnot(
+  identical(colnames(X_deg), meta_deg$sample_id),
+  all(!is.na(meta_deg$TumorStatus)),
+  all(!is.na(meta_deg$cohort))
+)
+
+# Sanity printouts
+table(meta_deg$TumorStatus)
+table(meta_deg$cohort, meta_deg$TumorStatus)
+
+```
+
+```{r}
+# ============================================================
+# CHUNK 2: Design matrix inspection
+# ============================================================
+
+# Build design matrix
+design <- model.matrix(~ TumorStatus + cohort, data = meta_deg)
+
+# Inspect
+colnames(design)
+head(design)
+
+```
+
+```{r}
+# ============================================================
+# CHUNK 3: limma fit + DEG extraction
+# ============================================================
+
+library(limma)
+
+# Fit model
+fit <- lmFit(X_deg, design)
+fit <- eBayes(fit)
+
+# Extract DEGs: GBM (GBM + rGBM) vs Control
+de_control_vs_gbm_all <- topTable(
+  fit,
+  coef = "TumorStatusGBM",
+  number = Inf,
+  sort.by = "P"
+) %>%
+  tibble::rownames_to_column("Gene_Name") %>%
+  dplyr::arrange(adj.P.Val, P.Value)
+
+# Quick sanity checks
+head(de_control_vs_gbm_all, 10)
+
+summary(de_control_vs_gbm_all$logFC)
+table(de_control_vs_gbm_all$adj.P.Val < 0.05)
+
+```
+
+```{r}
+# ============================================================
+# Volcano with explicit FDR + logFC cutoffs
+# ============================================================
+
+library(ggrepel)
+
+fdr_cutoff   <- 0.05
+logfc_cutoff <- 1
+top_n <- 15
+
+vol_df <- de_control_vs_gbm_all %>%
+  dplyr::mutate(
+    neglog10FDR = -log10(adj.P.Val),
+    direction = dplyr::case_when(
+      adj.P.Val < fdr_cutoff & logFC >=  logfc_cutoff ~ "Up in GBM",
+      adj.P.Val < fdr_cutoff & logFC <= -logfc_cutoff ~ "Up in Control",
+      TRUE ~ "Not significant"
+    )
+  )
+
+label_df <- vol_df %>%
+  dplyr::filter(direction == "Up in GBM") %>%
+  dplyr::arrange(desc(logFC)) %>%
+  dplyr::slice_head(n = top_n)
+
+ggplot(vol_df, aes(logFC, neglog10FDR)) +
+  geom_point(aes(color = direction), alpha = 0.6, size = 1.2) +
+  geom_text_repel(
+    data = label_df,
+    aes(label = Gene_Name),
+    size = 3,
+    max.overlaps = Inf
+  ) +
+  geom_hline(yintercept = -log10(fdr_cutoff), linetype = "dashed") +
+  geom_vline(xintercept = c(-logfc_cutoff, logfc_cutoff), linetype = "dotted") +
+  scale_color_manual(
+    values = c(
+      "Up in GBM" = "firebrick",
+      "Up in Control" = "steelblue",
+      "Not significant" = "grey70"
+    )
+  ) +
+  labs(
+    title = "Control vs All GBM (GBM + rGBM)",
+    subtitle = paste0(
+      "FDR < ", fdr_cutoff,
+      " | |logFC| ≥ ", logfc_cutoff,
+      " (Top ", top_n, " GBM-up labeled)"
+    ),
+    x = "logFC (GBM / Control)",
+    y = "-log10(FDR)",
+    color = ""
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+
+```
+```{r}
+
+stopifnot(exists("de_control_vs_gbm_all"))
+
+# ---- Ranked gene list ----
+gene_ranks <- de_control_vs_gbm_all$logFC
+names(gene_ranks) <- de_control_vs_gbm_all$Gene_Name
+
+# Clean ranking vector
+gene_ranks <- gene_ranks[!is.na(names(gene_ranks))]
+gene_ranks <- gene_ranks[!duplicated(names(gene_ranks))]
+gene_ranks <- sort(gene_ranks, decreasing = TRUE)
+
+# ---- Run GO BP GSEA ----
+gsea_go_bp <- gseGO(
+  geneList     = gene_ranks,
+  OrgDb        = org.Hs.eg.db,
+  keyType      = "SYMBOL",
+  ont          = "BP",
+  minGSSize    = 15,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = FALSE
+)
+
+# Inspect results
+head(gsea_go_bp@result[, c("ID", "Description", "NES", "pvalue", "p.adjust")])
+
+# How many significant terms?
+table(gsea_go_bp@result$p.adjust < 0.05)
+
+```
+
+```{r}
+# ============================================================
+# CHUNK 11: Top 5 positively enriched GO BP terms
+# ============================================================
+
+stopifnot(exists("gsea_go_bp"))
+
+top5_pos <- gsea_go_bp@result %>%
+  dplyr::filter(NES > 0) %>%          # GBM-enriched
+  dplyr::arrange(desc(NES)) %>%
+  dplyr::slice_head(n = 5) %>%
+  dplyr::select(
+    ID,
+    Description,
+    NES,
+    pvalue,
+    p.adjust,
+    core_enrichment
+  )
+
+top5_pos
+
+```
+```{r}
+
+stopifnot(exists("gsea_go_bp"))
+
+# Prepare top 5 GBM-enriched terms
+top5_df <- gsea_go_bp@result %>%
+  dplyr::filter(NES > 0) %>%
+  dplyr::arrange(desc(NES)) %>%
+  dplyr::slice_head(n = 5) %>%
+  dplyr::mutate(
+    Description = factor(Description, levels = rev(Description)),
+    FDR_label = paste0("FDR = ", signif(p.adjust, 2))
+  )
+
+ggplot(top5_df, aes(x = Description, y = NES)) +
+  geom_col(fill = "grey", width = 0.7) +
+  geom_text(
+    aes(label = FDR_label),
+    hjust = -0.05,
+    size = 3.5
+  ) +
+  coord_flip() +
+  labs(
+    title = "Top 5 GO Biological Processes enriched in GBM",
+    subtitle = "Control vs All GBM (GSEA)",
+    x = "",
+    y = "Normalized Enrichment Score (NES)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+
+
+```{r}
+# ============================================================
+# CHUNK 8: Add p-values to gene-level boxplots
+# ============================================================
+
+library(ggpubr)
+
+genes_of_interest <- c("COL1A1", "COL3A1")
+
+gene_df <- expr_adj_all[genes_of_interest, , drop = FALSE] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene") %>%
+  tidyr::pivot_longer(
+    -Gene,
+    names_to = "sample_id",
+    values_to = "expr"
+  ) %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::filter(group %in% c("Control", "GBM", "rGBM")) %>%
+  dplyr::mutate(
+    group = factor(group, levels = c("Control", "GBM", "rGBM"))
+  )
+
+# Pairwise comparisons to annotate
+comparisons <- list(
+  c("Control", "GBM"),
+  c("Control", "rGBM"),
+  c("GBM", "rGBM")
+)
+
+ggplot(gene_df, aes(x = group, y = expr, fill = group)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6, alpha = 0.7) +
+  geom_jitter(width = 0.15, size = 0.9, alpha = 0.5) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  stat_compare_means(
+    comparisons = comparisons,
+    method = "wilcox.test",
+    label = "p.signif",
+    tip.length = 0.01,
+    size = 3
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Control" = "grey70",
+      "GBM" = "#1f77b4",
+      "rGBM" = "#d62728"
+    )
+  ) +
+  labs(
+    title = "COL1A1 and COL3A1 expression",
+    subtitle = "Batch-adjusted log2(FPKM + 1); Wilcoxon tests",
+    x = "",
+    y = "Expression"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "none"
+  )
+
+```
+```{r}
+# ============================================================
+# CHUNK 9: COL1A1 / COL3A1 — Control vs Tumor
+# ============================================================
+
+library(ggpubr)
+
+genes_of_interest <- c("COL1A1", "COL3A1")
+
+gene_df <- expr_adj_all[genes_of_interest, , drop = FALSE] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene") %>%
+  tidyr::pivot_longer(
+    -Gene,
+    names_to = "sample_id",
+    values_to = "expr"
+  ) %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::filter(group %in% c("Control", "GBM", "rGBM")) %>%
+  dplyr::mutate(
+    TumorStatus = ifelse(group == "Control", "Control", "Tumor"),
+    TumorStatus = factor(TumorStatus, levels = c("Control", "Tumor"))
+  )
+
+ggplot(gene_df, aes(x = TumorStatus, y = expr, fill = TumorStatus)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6, alpha = 0.7) +
+  geom_jitter(width = 0.15, size = 0.9, alpha = 0.5) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  stat_compare_means(
+    method = "wilcox.test",
+    label = "p.signif",
+    size = 4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Control" = "grey70",
+      "Tumor" = "firebrick"
+    )
+  ) +
+  labs(
+    title = "COL1A1 and COL3A1 expression",
+    subtitle = "Control vs Tumor (GBM + rGBM combined)",
+    x = "",
+    y = "Batch-adjusted log2(FPKM + 1)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = "none"
+  )
+
+```
+#### Collagen score high vs low 
+
+```{r}
+# ============================================================
+#  Create CollagenScore and CollagenGroup
+# ============================================================
+
+stopifnot(exists("expr_adj_all"), exists("sample_meta_all"))
+
+genes_collagen <- c("COL1A1", "COL3A1")
+
+# Compute per-sample collagen score
+collagen_score <- colMeans(
+  expr_adj_all[genes_collagen, , drop = FALSE],
+  na.rm = TRUE
+)
+
+collagen_tbl <- tibble::tibble(
+  sample_id = names(collagen_score),
+  CollagenScore = as.numeric(collagen_score)
+)
+
+# Add to metadata
+sample_meta_all <- sample_meta_all %>%
+  dplyr::left_join(collagen_tbl, by = "sample_id")
+
+# Median split USING TUMORS ONLY
+cutpoint <- sample_meta_all %>%
+  dplyr::filter(group %in% c("GBM", "rGBM")) %>%
+  dplyr::pull(CollagenScore) %>%
+  median(na.rm = TRUE)
+
+sample_meta_all <- sample_meta_all %>%
+  dplyr::mutate(
+    CollagenGroup = dplyr::case_when(
+      group %in% c("GBM", "rGBM") & CollagenScore >= cutpoint ~ "CollagenHigh",
+      group %in% c("GBM", "rGBM") & CollagenScore <  cutpoint ~ "CollagenLow",
+      TRUE ~ NA_character_
+    ),
+    CollagenGroup = factor(CollagenGroup, levels = c("CollagenLow", "CollagenHigh"))
+  )
+
+# Sanity checks
+summary(sample_meta_all$CollagenScore)
+table(sample_meta_all$CollagenGroup, useNA = "ifany")
+table(sample_meta_all$group, sample_meta_all$CollagenGroup, useNA = "ifany")
+
+```
+```{r}
+# ============================================================
+# limma DEG — CollagenHigh vs CollagenLow (ALL GBM)
+# ============================================================
+
+stopifnot(exists("expr_adj_all"), exists("sample_meta_all"), "CollagenGroup" %in% colnames(sample_meta_all))
+
+# Tumor-only samples with defined CollagenGroup
+meta_use <- sample_meta_all %>%
+  dplyr::filter(group %in% c("GBM", "rGBM")) %>%
+  dplyr::filter(!is.na(CollagenGroup)) %>%
+  dplyr::mutate(
+    CollagenGroup = factor(CollagenGroup, levels = c("CollagenLow", "CollagenHigh")),
+    cohort = factor(cohort)
+  )
+
+# Subset expression to those samples and align
+X_use <- expr_adj_all[, meta_use$sample_id, drop = FALSE]
+stopifnot(identical(colnames(X_use), meta_use$sample_id))
+
+# Design: High vs Low, adjust for cohort
+design_use <- model.matrix(~ CollagenGroup + cohort, data = meta_use)
+stopifnot("CollagenGroupCollagenHigh" %in% colnames(design_use))
+
+# Fit limma
+fit <- limma::lmFit(X_use, design_use)
+fit <- limma::eBayes(fit)
+
+de_collagen_high_vs_low_all <- limma::topTable(
+  fit,
+  coef = "CollagenGroupCollagenHigh",
+  number = Inf,
+  sort.by = "P"
+) %>%
+  tibble::rownames_to_column("Gene_Name") %>%
+  dplyr::arrange(adj.P.Val, P.Value)
+
+# Sanity outputs
+message("N samples used: ", ncol(X_use),
+        " | Low: ", sum(meta_use$CollagenGroup == "CollagenLow"),
+        " | High: ", sum(meta_use$CollagenGroup == "CollagenHigh"))
+
+head(de_collagen_high_vs_low_all, 10)
+table(de_collagen_high_vs_low_all$adj.P.Val < 0.05)
+summary(de_collagen_high_vs_low_all$logFC)
+
+```
+```{r}
+# ============================================================
+#  GSEA — Collagen High vs Low (ALL GBM)
+# ============================================================
+
+stopifnot(exists("de_collagen_high_vs_low_all"))
+
+# ---- Ranked gene list ----
+gene_ranks <- de_collagen_high_vs_low_all$logFC
+names(gene_ranks) <- de_collagen_high_vs_low_all$Gene_Name
+
+# Clean ranking vector
+gene_ranks <- gene_ranks[!is.na(names(gene_ranks))]
+gene_ranks <- gene_ranks[!duplicated(names(gene_ranks))]
+gene_ranks <- sort(gene_ranks, decreasing = TRUE)
+
+# ---- Run GSEA (GO Biological Process) ----
+gsea_col_bp <- gseGO(
+  geneList     = gene_ranks,
+  OrgDb        = org.Hs.eg.db,
+  keyType      = "SYMBOL",
+  ont          = "BP",
+  minGSSize    = 15,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = FALSE
+)
+
+# Inspect
+head(gsea_col_bp@result[, c("ID", "Description", "NES", "pvalue", "p.adjust")])
+
+# How many significant terms?
+table(gsea_col_bp@result$p.adjust < 0.05)
+
+```
+
+```{r}
+# Find TGF-beta–related GO BP terms
+tgfb_terms <- gsea_col_bp@result %>%
+  dplyr::filter(grepl("Transforming growth", Description, ignore.case = TRUE))
+
+tgfb_terms[, c("ID", "Description", "NES", "p.adjust")]
+
+```
+
+```{r}
+# ============================================================
+#  Plain GSEA enrichment plot (TGF-β)
+# ============================================================
+
+library(enrichplot)
+
+tgfb_id <- "GO:0007179"
+
+gseaplot2(
+  gsea_col_bp,
+  geneSetID = tgfb_id,
+  title = "TGF-β receptor signaling pathway\nCollagen High vs Collagen Low (All GBM)",
+  base_size = 11
+)
+
+```
+```{r}
+# ============================================================
+#  TGF-β GSEA statistics table
+# ============================================================
+
+tgfb_stats <- gsea_col_bp@result %>%
+  dplyr::filter(ID == tgfb_id) %>%
+  dplyr::select(
+    ID,
+    Description,
+    NES,
+    pvalue,
+    p.adjust
+  )
+
+tgfb_stats
+
+```
+```{r}
+# ============================================================
+# CHUNK 25: Resolve CollagenScore.x/.y and run correlation
+# ============================================================
+
+# Use the newly computed score (either x or y is fine; they match)
+corr_df <- corr_df %>%
+  dplyr::mutate(CollagenScore = CollagenScore.x) %>%
+  dplyr::select(-CollagenScore.x, -CollagenScore.y)
+
+# Sanity
+stopifnot(
+  "CollagenScore" %in% colnames(corr_df),
+  is.numeric(corr_df$CollagenScore),
+  is.numeric(corr_df$TGFB_Score)
+)
+
+# Spearman correlation
+cor_test <- cor.test(
+  corr_df$CollagenScore,
+  corr_df$TGFB_Score,
+  method = "spearman"
+)
+
+cor_test
+
+```
+
+```{r}
+# ============================================================
+# CHUNK 26: Correlation plot (colored by CollagenGroup)
+# ============================================================
+
+# Spearman stats (recompute for subtitle)
+cor_test <- cor.test(
+  corr_df$CollagenScore,
+  corr_df$TGFB_Score,
+  method = "spearman"
+)
+
+ggplot(corr_df, aes(x = CollagenScore, y = TGFB_Score, color = CollagenGroup)) +
+  geom_point(alpha = 0.75, size = 1.8) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    title = "Collagen expression correlates with TGF-β pathway activity",
+    subtitle = paste0(
+      "Spearman ρ = ", round(unname(cor_test$estimate), 2),
+      " | p = ", signif(cor_test$p.value, 2),
+      " | n = ", nrow(corr_df)
+    ),
+    x = "Collagen score (mean of COL1A1 + COL3A1)",
+    y = "TGF-β score (mean of core enrichment genes)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.title = element_blank(),
+    legend.position = "top"
+  )
+
+```
+
+```{r}
+# ============================================================
+# CHUNK 27: Survival — COL x TGF-beta (4 groups)
+# ============================================================
+
+library(survival)
+library(survminer)
+
+stopifnot(
+  exists("corr_df"),
+  all(c("OS_days", "OS_event") %in% colnames(corr_df))
+)
+
+# ---- 1. Median split for TGFB score (tumors only) ----
+tgfb_cut <- median(corr_df$TGFB_Score, na.rm = TRUE)
+
+surv_df <- corr_df %>%
+  dplyr::mutate(
+    TGFB_Group = ifelse(TGFB_Score >= tgfb_cut, "TGFB_High", "TGFB_Low"),
+    TGFB_Group = factor(TGFB_Group, levels = c("TGFB_Low", "TGFB_High"))
+  )
+
+# ---- 2. Ensure CollagenGroup is present ----
+stopifnot("CollagenGroup" %in% colnames(surv_df))
+
+# ---- 3. Define 4-group variable ----
+surv_df <- surv_df %>%
+  dplyr::mutate(
+    COL_TGFB_Group = dplyr::case_when(
+      CollagenGroup == "CollagenHigh" & TGFB_Group == "TGFB_High" ~ "COL+ / TGFβ+",
+      CollagenGroup == "CollagenLow"  & TGFB_Group == "TGFB_Low"  ~ "COL− / TGFβ−",
+      CollagenGroup == "CollagenHigh" & TGFB_Group == "TGFB_Low"  ~ "COL+ / TGFβ−",
+      CollagenGroup == "CollagenLow"  & TGFB_Group == "TGFB_High" ~ "COL− / TGFβ+"
+    ),
+    COL_TGFB_Group = factor(
+      COL_TGFB_Group,
+      levels = c("COL− / TGFβ−", "COL+ / TGFβ−", "COL− / TGFβ+", "COL+ / TGFβ+")
+    )
+  )
+
+# Sanity
+table(surv_df$COL_TGFB_Group)
+
+# ---- 4. Kaplan–Meier fit ----
+surv_obj <- Surv(time = surv_df$OS_days, event = surv_df$OS_event)
+
+fit_km <- survfit(surv_obj ~ COL_TGFB_Group, data = surv_df)
+
+# ---- 5. Plot KM curves ----
+ggsurvplot(
+  fit_km,
+  data = surv_df,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = FALSE,
+  palette = c(
+    "COL− / TGFβ−" = "#2ca02c",
+    "COL+ / TGFβ−" = "#1f77b4",
+    "COL− / TGFβ+" = "#ff7f0e",
+    "COL+ / TGFβ+" = "#d62728"
+  ),
+  legend.title = "",
+  legend.labs = levels(surv_df$COL_TGFB_Group),
+  xlab = "Days",
+  ylab = "Overall survival probability",
+  title = "Overall survival stratified by Collagen and TGF-β activity",
+  ggtheme = theme_bw(base_size = 11)
+)
+
+```
+```{r}
+# ============================================================
+# CHUNK 28 (FIXED): Survival — COL−/TGFβ− vs COL+/TGFβ+
+# ============================================================
+
+library(survival)
+library(survminer)
+
+# Subset to extreme groups only
+surv_extreme <- surv_df %>%
+  dplyr::filter(COL_TGFB_Group %in% c("COL− / TGFβ−", "COL+ / TGFβ+"))
+
+# Drop unused factor levels (BASE R, not dplyr)
+surv_extreme <- droplevels(surv_extreme)
+
+# Sanity check
+table(surv_extreme$COL_TGFB_Group)
+
+# Survival object
+surv_obj_extreme <- Surv(
+  time  = surv_extreme$OS_days,
+  event = surv_extreme$OS_event
+)
+
+# KM fit
+fit_extreme <- survfit(
+  surv_obj_extreme ~ COL_TGFB_Group,
+  data = surv_extreme
+)
+
+# Plot
+ggsurvplot(
+  fit_extreme,
+  data = surv_extreme,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = FALSE,
+  palette = c(
+    "COL− / TGFβ−" = "#2ca02c",
+    "COL+ / TGFβ+" = "#d62728"
+  ),
+  legend.title = "",
+  legend.labs = levels(surv_extreme$COL_TGFB_Group),
+  xlab = "Days",
+  ylab = "Overall survival probability",
+  title = "Overall survival: COL−/TGFβ− vs COL+/TGFβ+",
+  ggtheme = theme_bw(base_size = 11)
+)
+
+```
+```{r}
+# ============================================================
+# CHUNK 29: Survival — primary GBM only, extreme groups
+# ============================================================
+
+library(survival)
+library(survminer)
+
+# Subset to PRIMARY GBM only + extreme groups
+surv_extreme_gbm <- surv_df %>%
+  dplyr::filter(
+    group == "GBM",
+    COL_TGFB_Group %in% c("COL− / TGFβ−", "COL+ / TGFβ+")
+  )
+
+# Drop unused factor levels (base R)
+surv_extreme_gbm <- droplevels(surv_extreme_gbm)
+
+# Sanity check
+table(surv_extreme_gbm$COL_TGFB_Group)
+
+# Survival object
+surv_obj_gbm <- Surv(
+  time  = surv_extreme_gbm$OS_days,
+  event = surv_extreme_gbm$OS_event
+)
+
+# KM fit
+fit_gbm <- survfit(
+  surv_obj_gbm ~ COL_TGFB_Group,
+  data = surv_extreme_gbm
+)
+
+# Plot
+ggsurvplot(
+  fit_gbm,
+  data = surv_extreme_gbm,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = FALSE,
+  palette = c(
+    "COL− / TGFβ−" = "#2ca02c",
+    "COL+ / TGFβ+" = "#d62728"
+  ),
+  legend.title = "",
+  legend.labs = levels(surv_extreme_gbm$COL_TGFB_Group),
+  xlab = "Days",
+  ylab = "Overall survival probability",
+  title = "Overall survival (Primary GBM only): COL−/TGFβ− vs COL+/TGFβ+",
+  ggtheme = theme_bw(base_size = 11)
+)
+
+```
+
