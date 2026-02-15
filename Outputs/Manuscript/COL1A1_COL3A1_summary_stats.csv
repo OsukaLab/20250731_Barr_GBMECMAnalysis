@@ -1,3 +1,4 @@
-"Gene","n_Control","n_GBM","n_rGBM","anova_p","Control vs GBM","Control vs rGBM","GBM vs rGBM"
-"COL1A1",20,238,89,3.27e-15,1.57e-15,3.4e-22,8.22e-05
-"COL3A1",20,238,89,4.47e-14,1.14e-15,3.45e-21,0.00138
+"Gene","n_Control","n_GBM","n_rGBM","df_group","df_resid","F_value","anova_p","Control vs GBM","Control vs rGBM","GBM vs rGBM"
+"COL1A1",20,238,89,2,344,36.8,3.27e-15,1.57e-15,3.4e-22,8.22e-05
+"COL1A2",20,238,89,2,344,31.3,3.12e-13,2.84e-13,3.9e-18,0.00604
+"COL3A1",20,238,89,2,344,33.7,4.47e-14,1.14e-15,3.45e-21,0.00138

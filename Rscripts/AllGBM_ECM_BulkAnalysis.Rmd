@@ -583,13 +583,11 @@ write.csv(
 ```
 
 ```{r}
-# ============================================================
 # Volcano with explicit FDR + logFC cutoffs
-# ============================================================
 
 fdr_cutoff   <- 0.05
 logfc_cutoff <- 1
-top_n <- 6
+top_n <- 10
 
 vol_df <- de_control_vs_gbm_all %>%
   dplyr::mutate(
@@ -653,8 +651,8 @@ ggsave(
   filename = file.path(out_dir, "Control_vs_GBM_Volcano.pdf"),
   plot     = ctrl_gbm_volcano,
   device   = cairo_pdf,
-  width    = 7,
-  height   = 6,
+  width    = 5,
+  height   = 5,
   units    = "in",
   dpi      = 300
 )
@@ -695,9 +693,8 @@ table(gsea_go_bp@result$p.adjust < 0.05)
 ```
 
 ```{r}
-# ============================================================
-# CHUNK 11: Top 20 positively enriched GO BP terms
-# ============================================================
+
+# Top 20 positively enriched GO BP terms
 
 stopifnot(exists("gsea_go_bp"))
 
@@ -714,11 +711,10 @@ top20_pos <- gsea_go_bp@result %>%
     core_enrichment
   )
 
-top5_pos
+top20_pos
 
-# ============================================================
+
 # Save top GSEA results table
-# ============================================================
 
 out_dir <- "/Data/Outputs/Manuscript"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
@@ -744,7 +740,7 @@ gsea_df <- gsea_go_bp@result %>%
 
 # Simple bar plot
 gsea_bar_simple <- ggplot(gsea_df, aes(x = Description, y = NES)) +
-  geom_col(fill = "grey", width = 0.7) +
+  geom_col(fill = "firebrick", width = 0.7) +
   coord_flip(ylim = c(2, max(gsea_df$NES) * 1.05)) +
   labs(
     title = "Top GO biological processes enriched in GBM",
@@ -773,12 +769,117 @@ ggsave(
   useDingbats = FALSE
 )
 ```
+```{r}
+
+# Get genes annotated to GO:0031012 (extracellular matrix)
+
+go_ecm_id <- "GO:0031012"
+
+ecm_genes_go <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys     = go_ecm_id,
+  keytype  = "GOALL",
+  columns  = c("SYMBOL")
+) %>%
+  dplyr::pull(SYMBOL) %>%
+  unique() %>%
+  na.omit()
+
+length(ecm_genes_go)
+
+```
+
+```{r}
+# Subset DEG results to GO:0031012 ECM genes
+
+stopifnot(exists("de_control_vs_gbm_all"))
+
+ecm_deg <- de_control_vs_gbm_all %>%
+  dplyr::mutate(Gene_Name = toupper(Gene_Name)) %>%
+  dplyr::filter(Gene_Name %in% toupper(ecm_genes_go)) %>%
+  dplyr::mutate(
+    neglog10FDR = -log10(adj.P.Val),
+    direction = dplyr::case_when(
+      logFC > 0 ~ "Up in GBM",
+      logFC < 0 ~ "Up in Control",
+      TRUE ~ "0"
+    ),
+    abs_logFC = abs(logFC)
+  )
+
+nrow(ecm_deg)
+
+```
+
+```{r}
+# Vertical lollipop – ECM genes UP in GBM only (flush bottom)
+
+stopifnot(exists("ecm_deg"))
+
+top_n_ecm <- 20
+baseline <- 2.5
+
+ecm_plot_df <- ecm_deg %>%
+  dplyr::filter(logFC > baseline) %>%   # keep only genes above 2.5
+  dplyr::arrange(desc(logFC)) %>%
+  dplyr::slice_head(n = top_n_ecm) %>%
+  dplyr::mutate(
+    Gene_Name = factor(Gene_Name, levels = Gene_Name)
+  )
+
+ecm_lollipop_vertical <- ggplot(ecm_plot_df,
+                                aes(x = Gene_Name, y = logFC)) +
+  geom_segment(aes(xend = Gene_Name,
+                   y = baseline,
+                   yend = logFC),
+               linewidth = 0.8,
+               color = "grey40") +
+  geom_point(
+    aes(size = neglog10FDR),
+    color = "firebrick"
+  ) +
+  scale_y_continuous(
+    limits = c(baseline, max(ecm_plot_df$logFC) * 1.05),
+    expand = c(0, 0)   # <-- THIS removes floating space
+  ) +
+  labs(
+    title = "GO:0031012 Extracellular Matrix Genes",
+    subtitle = "Upregulated in GBM vs Control",
+    x = "",
+    y = "logFC (GBM / Control)",
+    size = "-log10(FDR)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+print(ecm_lollipop_vertical)
+
+```
+```{r}
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+ggsave(
+  filename = file.path(out_dir, "Control_vs_GBM_GO0031012_ECM_Lollipop_Vertical.pdf"),
+  plot     = ecm_lollipop_vertical,   # change name if needed
+  device   = cairo_pdf,               # best for vector + text
+  width    = 5,                       # slightly wider for labels
+  height   = 4,
+  units    = "in",
+  dpi      = 300
+)
+```
 
 #### COL expression between normal, GBM, and rGBM
 
 
 ```{r}
-genes_of_interest <- c("COL1A1", "COL3A1")
+genes_of_interest <- c("COL1A1", "COL1A2","COL3A1")
 
 gene_df <- expr_adj_all[genes_of_interest, , drop = FALSE] %>%
   as.data.frame() %>%
@@ -806,7 +907,7 @@ collagen_boxplot_clean <- ggplot(gene_df, aes(x = group, y = expr, fill = group)
     )
   ) +
   labs(
-    title = "COL1A1 and COL3A1 expression",
+    title = "COL1A1, COL1A2, and COL3A1 expression",
     subtitle = "Batch-adjusted log2(FPKM + 1)",
     x = "",
     y = "Expression"
@@ -826,11 +927,11 @@ out_dir <- "/Data/Outputs/Manuscript"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 ggsave(
-  filename = file.path(out_dir, "GBM_vs_rGBM_COL1A1_COL3A1_boxplot.pdf"),
+  filename = file.path(out_dir, "GBM_vs_rGBM_COL1A1_1A2_COL3A1_boxplot.pdf"),
   plot     = collagen_boxplot_clean,
   device   = pdf,
-  width    = 7,
-  height   = 5,
+  width    = 5,
+  height   = 3,
   units    = "in",
   useDingbats = FALSE
 )
@@ -884,6 +985,32 @@ posthoc_tbl_clean <- gene_df %>%
 posthoc_tbl_clean
 
 ```
+
+```{r}
+anova_tbl <- gene_df %>%
+  dplyr::mutate(group = factor(group, levels = c("Control", "GBM", "rGBM"))) %>%
+  dplyr::group_by(Gene) %>%
+  tidyr::nest() %>%
+  dplyr::mutate(
+    fit = purrr::map(data, ~ stats::aov(expr ~ group, data = .x)),
+    aov_tab = purrr::map(fit, ~ summary(.x)[[1]])
+  ) %>%
+  dplyr::transmute(
+    Gene,
+    df_group = purrr::map_int(aov_tab, ~ .x["group", "Df"]),
+    df_resid = purrr::map_int(aov_tab, ~ .x["Residuals", "Df"]),
+    F_value  = purrr::map_dbl(aov_tab, ~ unname(.x["group", "F value"])),
+    anova_p  = purrr::map_dbl(aov_tab, ~ unname(.x["group", "Pr(>F)"]))
+  ) %>%
+  dplyr::mutate(
+    F_value = signif(F_value, 3),
+    anova_p = signif(anova_p, 3)
+  ) %>%
+  dplyr::arrange(Gene)
+
+anova_tbl
+```
+
 ```{r}
 stopifnot(
   exists("gene_df"),
@@ -977,10 +1104,10 @@ write.csv(
 )
 
 ```
+
 ```{r}
-# ============================================================
 # Volcano: rGBM vs GBM
-# ============================================================
+
 
 stopifnot(exists("de_rgbm_vs_gbm"))
 
@@ -1049,12 +1176,24 @@ write.csv(
 )
 
 ```
+```{r}
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+ggsave(
+  filename = file.path(out_dir, "rGBM_vs_GBM_Volcano.pdf"),
+  plot     = rgbm_volcano,
+  device   = cairo_pdf,   # vector, Illustrator-friendly
+  width    = 4,
+  height   = 4,
+  units    = "in",
+  dpi      = 300
+)
+```
+
 
 ```{r}
 stopifnot(exists("de_rgbm_vs_gbm"))
-
-library(clusterProfiler)
-library(org.Hs.eg.db)
 
 # ---- Rank genes for GSEA ----
 gene_ranks_rg <- de_rgbm_vs_gbm$logFC
@@ -1086,13 +1225,78 @@ table(gsea_rg_bp@result$NES > 0)
 ```
 
 ```{r}
-# ============================================================
-# CHUNK 9: COL1A1 / COL3A1 — Control vs Tumor
-# ============================================================
+stopifnot(exists("gsea_rg_bp"))
 
-library(ggpubr)
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
-genes_of_interest <- c("COL1A1", "COL3A1")
+gsea_sig_rg <- gsea_rg_bp@result %>%
+  dplyr::filter(!is.na(p.adjust)) %>%
+  dplyr::arrange(p.adjust)
+
+# Top 20 rGBM-enriched (NES > 0)
+top20_pos_rg <- gsea_sig_rg %>%
+  dplyr::filter(NES > 0) %>%
+  dplyr::arrange(desc(NES)) %>%
+  dplyr::slice_head(n = 20) %>%
+  dplyr::select(ID, Description, NES, pvalue, p.adjust, core_enrichment)
+
+top20_pos_rg
+
+write.csv(top20_pos_rg, file.path(out_dir, "rGBM_vs_GBM_GSEA_Top20_Positive_BP.csv"), row.names = FALSE)
+```
+
+```{r}
+stopifnot(exists("top20_pos_rg"))
+
+# Prepare top 10 rGBM-enriched terms
+gsea_df_rg <- top20_pos_rg %>%
+  dplyr::arrange(desc(NES)) %>%
+  dplyr::slice_head(n = 10) %>%
+  dplyr::mutate(
+    Description = factor(Description, levels = rev(Description))
+  )
+
+# Simple horizontal bar plot
+gsea_bar_rg <- ggplot(gsea_df_rg, aes(x = Description, y = NES)) +
+  geom_col(fill = "firebrick", width = 0.7) +
+  coord_flip(ylim = c(min(gsea_df_rg$NES) * 0.95,
+                      max(gsea_df_rg$NES) * 1.05)) +
+  labs(
+    title = "Top GO biological processes enriched in rGBM",
+    subtitle = "rGBM vs Primary GBM (GSEA)",
+    x = "",
+    y = "Normalized Enrichment Score (NES)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+print(gsea_bar_rg)
+
+```
+```{r}
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+ggsave(
+  filename = file.path(out_dir, "rGBM_vs_GBM_GSEA_Top10_Positive_BP.pdf"),
+  plot     = gsea_bar_rg,
+  device   = pdf,
+  width    = 15,
+  height   = 5,
+  units    = "in",
+  useDingbats = FALSE
+)
+
+```
+
+```{r}
+# COL1A1 / COL3A1 — Control vs Tumor
+
+genes_of_interest <- c("COL1A1","COL1A2", "COL3A1")
 
 gene_df <- expr_adj_all[genes_of_interest, , drop = FALSE] %>%
   as.data.frame() %>%
@@ -1125,95 +1329,123 @@ ggplot(gene_df, aes(x = TumorStatus, y = expr, fill = TumorStatus)) +
     )
   ) +
   labs(
-    title = "COL1A1 and COL3A1 expression",
+    title = "COL1A1, COL1A2, and COL3A1 expression",
     subtitle = "Control vs Tumor (GBM + rGBM combined)",
     x = "",
     y = "Batch-adjusted log2(FPKM + 1)"
   ) +
   theme_bw(base_size = 11) +
   theme(
+    panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     legend.position = "none"
   )
 
 ```
+```{r}
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+ggsave(
+  filename = file.path(out_dir, "COL1A1_COL1A2_COL3A1_Control_vs_Tumor.pdf"),
+  plot     = last_plot(),        # saves the plot you just made
+  device   = cairo_pdf,          # best for Illustrator + vector
+  width    = 5,
+  height   = 3,
+  units    = "in",
+  dpi      = 300
+)
+```
+
+
 #### Collagen score high vs low only in rGBM
 
 ```{r}
-# ============================================================
-#  Create CollagenScore and CollagenGroup
-# ============================================================
+# Create CollagenScore + CollagenGroup (ALL tumors: GBM + rGBM)
+
 
 stopifnot(exists("expr_adj_all"), exists("sample_meta_all"))
 
-genes_collagen <- c("COL1A1", "COL3A1")
+genes_collagen <- c("COL1A1", "COL1A2", "COL3A1") 
 
-# Compute per-sample collagen score
-collagen_score <- colMeans(
-  expr_adj_all[genes_collagen, , drop = FALSE],
-  na.rm = TRUE
-)
+# Remove old columns if they exist (safe even after restart)
+sample_meta_all <- sample_meta_all %>%
+  dplyr::select(-dplyr::any_of(c("CollagenScore", "CollagenGroup")))
+
+# Check genes exist in expression matrix
+genes_present <- intersect(toupper(genes_collagen), toupper(rownames(expr_adj_all)))
+if (length(genes_present) < 2) {
+  stop("Too few collagen genes found in expr_adj_all rownames. Found: ",
+       paste(genes_present, collapse = ", "))
+}
+
+idx <- match(genes_present, toupper(rownames(expr_adj_all)))
+genes_use <- rownames(expr_adj_all)[idx]
+
+# Compute score per sample
+collagen_score <- colMeans(expr_adj_all[genes_use, , drop = FALSE], na.rm = TRUE)
 
 collagen_tbl <- tibble::tibble(
   sample_id = names(collagen_score),
   CollagenScore = as.numeric(collagen_score)
 )
 
-# Add to metadata
+# Join
 sample_meta_all <- sample_meta_all %>%
   dplyr::left_join(collagen_tbl, by = "sample_id")
 
-# Median split USING TUMORS ONLY
-cutpoint <- sample_meta_all %>%
-  dplyr::filter(group %in% c("rGBM")) %>%
-  dplyr::pull(CollagenScore) %>%
-  median(na.rm = TRUE)
+stopifnot("CollagenScore" %in% colnames(sample_meta_all))
+stopifnot(!all(is.na(sample_meta_all$CollagenScore)))
+
+# Median split using ALL tumors
+cut_vec <- sample_meta_all %>%
+  dplyr::filter(group %in% c("GBM", "rGBM")) %>%
+  dplyr::pull(CollagenScore)
+
+cutpoint <- median(cut_vec, na.rm = TRUE)
 
 sample_meta_all <- sample_meta_all %>%
   dplyr::mutate(
     CollagenGroup = dplyr::case_when(
-      group %in% c("rGBM") & CollagenScore >= cutpoint ~ "CollagenHigh",
-      group %in% c("rGBM") & CollagenScore <  cutpoint ~ "CollagenLow",
+      group %in% c("GBM", "rGBM") & CollagenScore >= cutpoint ~ "CollagenHigh",
+      group %in% c("GBM", "rGBM") & CollagenScore <  cutpoint ~ "CollagenLow",
       TRUE ~ NA_character_
     ),
     CollagenGroup = factor(CollagenGroup, levels = c("CollagenLow", "CollagenHigh"))
   )
 
-# Sanity checks
+# Sanity
 summary(sample_meta_all$CollagenScore)
 table(sample_meta_all$CollagenGroup, useNA = "ifany")
 table(sample_meta_all$group, sample_meta_all$CollagenGroup, useNA = "ifany")
 
 ```
+
 ```{r}
-# ============================================================
-# limma DEG — CollagenHigh vs CollagenLow (ALL GBM)
-# ============================================================
+# limma DEG — CollagenHigh vs CollagenLow (ALL tumors; adjust group + cohort)
 
-stopifnot(exists("expr_adj_all"), exists("sample_meta_all"), "CollagenGroup" %in% colnames(sample_meta_all))
+stopifnot(exists("expr_adj_all"), exists("sample_meta_all"),
+          "CollagenGroup" %in% colnames(sample_meta_all))
 
-# Tumor-only samples with defined CollagenGroup
 meta_use <- sample_meta_all %>%
-  dplyr::filter(group %in% c("rGBM")) %>%
+  dplyr::filter(group %in% c("GBM", "rGBM")) %>%
   dplyr::filter(!is.na(CollagenGroup)) %>%
   dplyr::mutate(
     CollagenGroup = factor(CollagenGroup, levels = c("CollagenLow", "CollagenHigh")),
+    group = factor(group, levels = c("GBM", "rGBM")),
     cohort = factor(cohort)
   )
 
-# Subset expression to those samples and align
 X_use <- expr_adj_all[, meta_use$sample_id, drop = FALSE]
 stopifnot(identical(colnames(X_use), meta_use$sample_id))
 
-# Design: High vs Low, adjust for cohort
-design_use <- model.matrix(~ CollagenGroup + cohort, data = meta_use)
+design_use <- model.matrix(~ CollagenGroup + group + cohort, data = meta_use)
 stopifnot("CollagenGroupCollagenHigh" %in% colnames(design_use))
 
-# Fit limma
 fit <- limma::lmFit(X_use, design_use)
 fit <- limma::eBayes(fit)
 
-de_collagen_high_vs_low_all <- limma::topTable(
+de_col_high_vs_low <- limma::topTable(
   fit,
   coef = "CollagenGroupCollagenHigh",
   number = Inf,
@@ -1222,57 +1454,229 @@ de_collagen_high_vs_low_all <- limma::topTable(
   tibble::rownames_to_column("Gene_Name") %>%
   dplyr::arrange(adj.P.Val, P.Value)
 
-# Sanity outputs
-message("N samples used: ", ncol(X_use),
+message("N tumors used: ", ncol(X_use),
         " | Low: ", sum(meta_use$CollagenGroup == "CollagenLow"),
         " | High: ", sum(meta_use$CollagenGroup == "CollagenHigh"))
 
-head(de_collagen_high_vs_low_all, 10)
-table(de_collagen_high_vs_low_all$adj.P.Val < 0.05)
-summary(de_collagen_high_vs_low_all$logFC)
+head(de_col_high_vs_low, 10)
+table(de_col_high_vs_low$adj.P.Val < 0.05)
+summary(de_col_high_vs_low$logFC)
+
+write.csv(
+  de_col_high_vs_low,
+  file = "/Data/Outputs/Manuscript/CollagenHigh_vs_CollagenLow_limma_ALLtumors.csv",
+  row.names = FALSE
+)
 
 ```
+
 ```{r}
 # ============================================================
-#  GSEA — Collagen High vs Low (ALL GBM)
+# Volcano: CollagenHigh vs CollagenLow (ALL tumors)
 # ============================================================
 
-stopifnot(exists("de_collagen_high_vs_low_all"))
+stopifnot(exists("de_col_high_vs_low"))
 
-# ---- Ranked gene list ----
-gene_ranks <- de_collagen_high_vs_low_all$logFC
-names(gene_ranks) <- de_collagen_high_vs_low_all$Gene_Name
+fdr_cutoff   <- 0.05
+logfc_cutoff <- 1
+top_n <- 15
 
-# Clean ranking vector
-gene_ranks <- gene_ranks[!is.na(names(gene_ranks))]
-gene_ranks <- gene_ranks[!duplicated(names(gene_ranks))]
-gene_ranks <- sort(gene_ranks, decreasing = TRUE)
+vol_col <- de_col_high_vs_low %>%
+  dplyr::mutate(
+    neglog10FDR = -log10(adj.P.Val),
+    direction = dplyr::case_when(
+      adj.P.Val < fdr_cutoff & logFC >=  logfc_cutoff ~ "Up in CollagenHigh",
+      adj.P.Val < fdr_cutoff & logFC <= -logfc_cutoff ~ "Up in CollagenLow",
+      TRUE ~ "Not significant"
+    )
+  )
 
-# ---- Run GSEA (GO Biological Process) ----
+label_col <- vol_col %>%
+  dplyr::filter(direction == "Up in CollagenHigh") %>%
+  dplyr::arrange(desc(logFC)) %>%
+  dplyr::slice_head(n = top_n)
+
+col_volcano <- ggplot(vol_col, aes(x = logFC, y = neglog10FDR)) +
+  geom_point(aes(color = direction), alpha = 0.6, size = 1.2) +
+  geom_text_repel(
+    data = label_col,
+    aes(label = Gene_Name),
+    size = 3,
+    max.overlaps = Inf
+  ) +
+  geom_hline(yintercept = -log10(fdr_cutoff), linetype = "dashed") +
+  geom_vline(xintercept = c(-logfc_cutoff, logfc_cutoff), linetype = "dotted") +
+  scale_color_manual(
+    values = c(
+      "Up in CollagenHigh" = "firebrick",
+      "Up in CollagenLow"  = "steelblue",
+      "Not significant"    = "grey70"
+    )
+  ) +
+  labs(
+    title = "CollagenHigh vs CollagenLow (All tumors)",
+    subtitle = paste0(
+      "FDR < ", fdr_cutoff,
+      " | |logFC| ≥ ", logfc_cutoff,
+      " (Top ", top_n, " High-up labeled)"
+    ),
+    x = "logFC (High / Low)",
+    y = "-log10(FDR)",
+    color = ""
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+
+print(col_volcano)
+
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+ggsave(
+  filename = file.path(out_dir, "CollagenHigh_vs_CollagenLow_ALLtumors_Volcano.pdf"),
+  plot     = col_volcano,
+  device   = cairo_pdf,
+  width    = 5,
+  height   = 5,
+  units    = "in",
+  dpi      = 300
+)
+
+write.csv(
+  vol_col,
+  file = file.path(out_dir, "CollagenHigh_vs_CollagenLow_ALLtumors_volcano.csv"),
+  row.names = FALSE
+)
+
+```
+
+```{r}
+# GSEA: CollagenHigh vs CollagenLow (ALL tumors) — GO BP
+
+stopifnot(exists("de_col_high_vs_low"))
+
+# ---- Build ranked gene list (robust duplicate handling) ----
+rank_tbl_col <- de_col_high_vs_low %>%
+  dplyr::transmute(
+    Gene_Name = toupper(as.character(Gene_Name)),
+    logFC     = as.numeric(logFC)
+  ) %>%
+  dplyr::filter(!is.na(Gene_Name), Gene_Name != "", !is.na(logFC)) %>%
+  dplyr::group_by(Gene_Name) %>%
+  dplyr::slice_max(order_by = abs(logFC), n = 1, with_ties = FALSE) %>%
+  dplyr::ungroup()
+
+gene_ranks_col <- rank_tbl_col$logFC
+names(gene_ranks_col) <- rank_tbl_col$Gene_Name
+gene_ranks_col <- sort(gene_ranks_col, decreasing = TRUE)
+
+stopifnot(length(gene_ranks_col) > 1000)
+
+# ---- Run GSEA (do not filter here; filter after) ----
 gsea_col_bp <- gseGO(
-  geneList     = gene_ranks,
+  geneList     = gene_ranks_col,
   OrgDb        = org.Hs.eg.db,
   keyType      = "SYMBOL",
   ont          = "BP",
   minGSSize    = 15,
   maxGSSize    = 500,
-  pvalueCutoff = 0.05,
+  pvalueCutoff = 1,     # keep everything; filter downstream
   verbose      = FALSE
 )
 
-# Inspect
-head(gsea_col_bp@result[, c("ID", "Description", "NES", "pvalue", "p.adjust")])
-
-# How many significant terms?
-table(gsea_col_bp@result$p.adjust < 0.05)
+# Quick inspect
+head(gsea_col_bp@result[, c("ID","Description","NES","pvalue","p.adjust")])
+sum(gsea_col_bp@result$p.adjust < 0.05, na.rm = TRUE)
+table(gsea_col_bp@result$NES > 0)
 
 ```
+
+```{r}
+# Top 20 GO BP enriched in CollagenHigh
+
+
+stopifnot(exists("gsea_col_bp"))
+
+top20_pos_col <- gsea_col_bp@result %>%
+  dplyr::filter(!is.na(p.adjust)) %>%
+  dplyr::filter(NES > 0) %>%        # Positive NES = enriched in CollagenHigh
+  dplyr::arrange(desc(NES)) %>%
+  dplyr::slice_head(n = 20) %>%
+  dplyr::select(
+    ID,
+    Description,
+    NES,
+    pvalue,
+    p.adjust,
+    core_enrichment
+  )
+
+top20_pos_col
+
+```
+```{r}
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+write.csv(
+  top20_pos_col,
+  file = file.path(out_dir, "CollagenHigh_vs_Low_GSEA_Top20_Positive_BP.csv"),
+  row.names = FALSE
+)
+
+```
+
+```{r}
+# Bar plot: Top 20 enriched in CollagenHigh
+
+
+gsea_df_col <- top20_pos_col %>%
+  dplyr::mutate(
+    Description = factor(Description, levels = rev(Description))
+  )
+
+gsea_bar_col <- ggplot(gsea_df_col, aes(x = Description, y = NES)) +
+  geom_col(fill = "firebrick", width = 0.7) +
+  coord_flip(
+    ylim = c(min(gsea_df_col$NES) * 0.95,
+             max(gsea_df_col$NES) * 1.05)
+  ) +
+  labs(
+    title = "Top GO biological processes enriched in CollagenHigh tumors",
+    subtitle = "CollagenHigh vs CollagenLow (GSEA, GO:BP)",
+    x = "",
+    y = "Normalized Enrichment Score (NES)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+print(gsea_bar_col)
+
+ggsave(
+  filename = file.path(out_dir, "CollagenHigh_vs_Low_GSEA_Top20_Positive_BP.pdf"),
+  plot     = gsea_bar_col,
+  device   = pdf,
+  width    = 15,
+  height   = 6,
+  units    = "in",
+  useDingbats = FALSE
+)
+
+```
+
 
 ```{r}
 immune_supp_terms <- gsea_col_bp@result %>%
   dplyr::filter(
     grepl(
-      "negative regulation|t cell|lymphocyte|immune effector|cytokine|tgf",
+      "negative regulation|immune effector|tgf|immune suppresion",
       Description,
       ignore.case = TRUE
     )
@@ -1281,9 +1685,68 @@ immune_supp_terms <- gsea_col_bp@result %>%
 
 immune_supp_terms %>%
   dplyr::select(ID, Description, NES, p.adjust) %>%
-  head(20)
+  head(50)
 
 ```
+```{r}
+# ============================================================
+# Top 10 immune-related terms enriched in CollagenHigh
+# ============================================================
+
+stopifnot(exists("immune_supp_terms"))
+
+top10_immune_pos <- immune_supp_terms %>%
+  dplyr::filter(NES > 0) %>%              # Enriched in CollagenHigh
+  dplyr::arrange(desc(NES)) %>%
+  dplyr::slice_head(n = 10) %>%
+  dplyr::mutate(
+    Description = factor(Description, levels = rev(Description))
+  )
+
+top10_immune_pos %>%
+  dplyr::select(ID, Description, NES, p.adjust)
+
+```
+```{r}
+immune_bar_plot <- ggplot(top10_immune_pos,
+                          aes(x = Description, y = NES)) +
+  geom_col(fill = "firebrick", width = 0.7) +
+  coord_flip(
+    ylim = c(min(top10_immune_pos$NES) * 0.95,
+             max(top10_immune_pos$NES) * 1.05)
+  ) +
+  labs(
+    title = "Immune-related GO terms enriched in CollagenHigh tumors",
+    subtitle = "Filtered by immune suppression / regulation keywords",
+    x = "",
+    y = "Normalized Enrichment Score (NES)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+print(immune_bar_plot)
+
+```
+```{r}
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+ggsave(
+  filename = file.path(out_dir, "CollagenHigh_vs_Low_GSEA_Immune_Top10_Positive_BP.pdf"),
+  plot     = immune_bar_plot,
+  device   = pdf,
+  width    = 7,
+  height   = 5,
+  units    = "in",
+  useDingbats = FALSE
+)
+
+```
+
+
 
 ```{r}
 # Find TGF-beta–related GO BP terms
@@ -1303,14 +1766,27 @@ library(enrichplot)
 
 tgfb_id <- "GO:0007179"
 
-gseaplot2(
+tgfb_plot <- gseaplot2(
   gsea_col_bp,
   geneSetID = tgfb_id,
-  title = "TGF-β receptor signaling pathway\nCollagen High vs Collagen Low (rGBM)",
+  title = "TGF-β receptor signaling pathway\nCollagen High vs Collagen Low (GBM)",
   base_size = 11
 )
 
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+ggsave(
+  filename = file.path(out_dir, "CollagenHigh_vs_Low_GSEA_TGFB_GO0007179.pdf"),
+  plot     = tgfb_plot,
+  device   = cairo_pdf,     # vector + Illustrator safe
+  width    = 7,
+  height   = 5,
+  units    = "in",
+  dpi      = 300
+)
 ```
+
 ```{r}
 # ============================================================
 #  TGF-β GSEA statistics table
@@ -1333,9 +1809,6 @@ tgfb_stats
 # ============================================================
 # Build TGF-β gene set (GO:0007179)
 # ============================================================
-
-library(AnnotationDbi)
-library(org.Hs.eg.db)
 
 tgfb_id <- "GO:0007179"  # TGF-β receptor signaling pathway
 
@@ -1477,7 +1950,7 @@ ggsave(
   filename = file.path(out_dir, "rGBM_Collagen_vs_TGFb_Pearson.pdf"),
   plot     = p_corr,
   device   = pdf,
-  width    = 6,
+  width    = 5,
   height   = 5,
   units    = "in",
   useDingbats = FALSE
@@ -1489,7 +1962,7 @@ ggsave(
 
 ```{r}
 # ============================================================
-# Define joint Collagen / TGF-β groups (rGBM)
+# Define joint Collagen / TGF-β groups (GBM)
 # ============================================================
 
 stopifnot(
@@ -1502,7 +1975,7 @@ stopifnot(
 library(dplyr)
 
 surv_df <- sample_meta_all %>%
-  dplyr::filter(group == "rGBM") %>%
+  dplyr::filter(group %in% c("GBM", "rGBM")) %>%
   dplyr::filter(!is.na(CollagenScore), !is.na(TGFb_score)) %>%
   dplyr::filter(!is.na(OS_days), !is.na(OS_event))
 
@@ -1569,13 +2042,165 @@ p_surv <- ggsurvplot(
   legend.labs = c("Low COL / Low TGF-β", "High COL / High TGF-β"),
   xlab = "Time (days)",
   ylab = "Overall survival probability",
-  title = "Combined collagen and TGF-β signaling stratify survival in rGBM",
+  title = "Combined collagen and TGF-β signaling stratify survival in GBM",
   risk.table.height = 0.25,
   ggtheme = theme_bw(base_size = 11)
 )
 
 print(p_surv)
 
+
+```
+```{r}
+ggsave(
+  filename = file.path(out_dir, "Collagen_TGFB_Combined_Survival_GBM_curve_only.pdf"),
+  plot     = p_surv$plot,
+  device   = cairo_pdf,
+  width    = 6,
+  height   = 5,
+  units    = "in",
+  dpi      = 300
+)
+```
+
+
+## TCGA GBM COL Analysis
+
+Downloaded .csv form https://gliovis.bioinfo.cnio.es/. Using TCGA_GBM (RNA-seq) and selecting COL1A1, COL1A2, and COL3A1. 
+
+```{r}
+# Load TCGA collagen expression CSVs
+
+
+col1a1_tcga <- read.csv("/Data/Inputs/TCGA_GBM_GLioVis_COL1A1.csv",
+                        stringsAsFactors = FALSE)
+
+col1a2_tcga <- read.csv("/Data/Inputs/TCGA_GBM_GLioVis_COL1A2.csv",
+                        stringsAsFactors = FALSE)
+
+col3a1_tcga <- read.csv("/Data/Inputs/TCGA_GBM_GLioVis_COL3A1.csv",
+                        stringsAsFactors = FALSE)
+
+# Check structure
+colnames(col1a1_tcga)
+head(col1a1_tcga)
+
+```
+
+```{r}
+# Standardize + merge TCGA GLioVis collagen CSVs
+# Columns: Histology (group), mRNA (expression)
+# Groups: Non-tumor vs GBM
+
+
+prep_tcga <- function(df, gene_name) {
+  df %>%
+    dplyr::rename(
+      Group = Histology,
+      Expression = mRNA
+    ) %>%
+    dplyr::mutate(
+      Gene = gene_name,
+      Group = dplyr::case_when(
+        grepl("non", tolower(Group)) ~ "Non-tumor",
+        grepl("gbm", tolower(Group)) ~ "GBM",
+        TRUE ~ NA_character_
+      ),
+      Group = factor(Group, levels = c("Non-tumor", "GBM")),
+      Expression = suppressWarnings(as.numeric(Expression))
+    ) %>%
+    dplyr::filter(!is.na(Group), !is.na(Expression)) %>%
+    dplyr::select(Gene, Group, Expression)
+}
+
+tcga_df <- dplyr::bind_rows(
+  prep_tcga(col1a1_tcga, "COL1A1"),
+  prep_tcga(col1a2_tcga, "COL1A2"),
+  prep_tcga(col3a1_tcga, "COL3A1")
+)
+
+# Sanity checks
+table(tcga_df$Gene, tcga_df$Group)
+summary(tcga_df$Expression)
+
+```
+
+
+```{r}
+# T-tests per gene (Non-tumor vs GBM)
+
+
+stopifnot(exists("tcga_df"))
+
+t_test_results <- tcga_df %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(
+    n_nontumor = sum(Group == "Non-tumor"),
+    n_gbm      = sum(Group == "GBM"),
+    mean_nontumor = mean(Expression[Group == "Non-tumor"], na.rm = TRUE),
+    mean_gbm      = mean(Expression[Group == "GBM"], na.rm = TRUE),
+    p_value = t.test(Expression ~ Group)$p.value
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(p_adj = p.adjust(p_value, method = "BH"))
+
+t_test_results
+
+# Save table
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+write.csv(
+  t_test_results,
+  file = file.path(out_dir, "TCGA_COL_Ttests_NonTumor_vs_GBM.csv"),
+  row.names = FALSE
+)
+
+```
+```{r}
+# Faceted boxplots (Non-tumor vs GBM) + t-test labels
+
+
+tcga_plot <- ggplot(tcga_df, aes(x = Group, y = Expression, fill = Group)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6, alpha = 0.7) +
+  geom_jitter(width = 0.15, size = 0.9, alpha = 0.5) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  stat_compare_means(
+    method = "t.test",
+    label = "p.signif",
+    size = 4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Non-tumor" = "grey70",
+      "GBM" = "firebrick"
+    )
+  ) +
+  labs(
+    title = "TCGA GBM: Collagen Gene Expression",
+    subtitle = "Non-tumor vs GBM",
+    x = "",
+    y = "mRNA expression"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "none"
+  )
+
+print(tcga_plot)
+
+# Save PDF for Illustrator
+ggsave(
+  filename = file.path(out_dir, "TCGA_COL_Boxplots_NonTumor_vs_GBM.pdf"),
+  plot     = tcga_plot,
+  device   = cairo_pdf,
+  width    = 5,
+  height   = 3,
+  units    = "in",
+  dpi      = 300
+)
 
 ```
 
