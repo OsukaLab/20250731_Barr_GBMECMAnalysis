@@ -1962,7 +1962,7 @@ ggsave(
 
 ```{r}
 # ============================================================
-# Define joint Collagen / TGF-β groups (GBM)
+# Define joint Collagen / TGF-β groups (all GBM)
 # ============================================================
 
 stopifnot(
@@ -2054,6 +2054,206 @@ print(p_surv)
 ```{r}
 ggsave(
   filename = file.path(out_dir, "Collagen_TGFB_Combined_Survival_GBM_curve_only.pdf"),
+  plot     = p_surv$plot,
+  device   = cairo_pdf,
+  width    = 6,
+  height   = 5,
+  units    = "in",
+  dpi      = 300
+)
+```
+
+```{r}
+# ============================================================
+# Define joint Collagen / TGF-β groups (rGBM)
+# ============================================================
+
+stopifnot(
+  "CollagenScore" %in% colnames(sample_meta_all),
+  "TGFb_score" %in% colnames(sample_meta_all),
+  "OS_days" %in% colnames(sample_meta_all),
+  "OS_event" %in% colnames(sample_meta_all)
+)
+
+library(dplyr)
+
+surv_df <- sample_meta_all %>%
+  dplyr::filter(group %in% c("rGBM")) %>%
+  dplyr::filter(!is.na(CollagenScore), !is.na(TGFb_score)) %>%
+  dplyr::filter(!is.na(OS_days), !is.na(OS_event))
+
+# Median cutpoints (rGBM-specific)
+col_cut <- median(surv_df$CollagenScore, na.rm = TRUE)
+tgfb_cut <- median(surv_df$TGFb_score, na.rm = TRUE)
+
+surv_df <- surv_df %>%
+  dplyr::mutate(
+    COL_group = ifelse(CollagenScore >= col_cut, "High", "Low"),
+    TGFb_group = ifelse(TGFb_score >= tgfb_cut, "High", "Low"),
+    JointGroup = dplyr::case_when(
+      COL_group == "Low"  & TGFb_group == "Low"  ~ "COL_low / TGFb_low",
+      COL_group == "High" & TGFb_group == "High" ~ "COL_high / TGFb_high",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  dplyr::filter(!is.na(JointGroup)) %>%
+  dplyr::mutate(
+    JointGroup = factor(
+      JointGroup,
+      levels = c("COL_low / TGFb_low", "COL_high / TGFb_high")
+    )
+  )
+
+table(surv_df$JointGroup)
+stopifnot(length(unique(surv_df$JointGroup)) == 2)
+
+```
+
+```{r}
+# ============================================================
+# Kaplan–Meier: Double-low vs Double-high
+# ============================================================
+
+fit_km <- survfit(
+  Surv(OS_days, OS_event) ~ JointGroup,
+  data = surv_df
+)
+
+fit_km
+
+```
+
+```{r}
+# ============================================================
+# Survival plot
+# ============================================================
+
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+p_surv <- ggsurvplot(
+  fit_km,
+  data = surv_df,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = FALSE,
+  palette = c("steelblue", "firebrick"),
+  legend.title = "",
+  legend.labs = c("Low COL / Low TGF-β", "High COL / High TGF-β"),
+  xlab = "Time (days)",
+  ylab = "Overall survival probability",
+  title = "Combined collagen and TGF-β signaling stratify survival in rGBM",
+  risk.table.height = 0.25,
+  ggtheme = theme_bw(base_size = 11)
+)
+
+print(p_surv)
+
+
+```
+```{r}
+ggsave(
+  filename = file.path(out_dir, "Collagen_TGFB_Combined_Survival_rGBM_curve_only.pdf"),
+  plot     = p_surv$plot,
+  device   = cairo_pdf,
+  width    = 6,
+  height   = 5,
+  units    = "in",
+  dpi      = 300
+)
+```
+
+```{r}
+# ============================================================
+# Define joint Collagen / TGF-β groups (only primary GBM)
+# ============================================================
+
+stopifnot(
+  "CollagenScore" %in% colnames(sample_meta_all),
+  "TGFb_score" %in% colnames(sample_meta_all),
+  "OS_days" %in% colnames(sample_meta_all),
+  "OS_event" %in% colnames(sample_meta_all)
+)
+
+library(dplyr)
+
+surv_df <- sample_meta_all %>%
+  dplyr::filter(group %in% c("GBM")) %>%
+  dplyr::filter(!is.na(CollagenScore), !is.na(TGFb_score)) %>%
+  dplyr::filter(!is.na(OS_days), !is.na(OS_event))
+
+# Median cutpoints (rGBM-specific)
+col_cut <- median(surv_df$CollagenScore, na.rm = TRUE)
+tgfb_cut <- median(surv_df$TGFb_score, na.rm = TRUE)
+
+surv_df <- surv_df %>%
+  dplyr::mutate(
+    COL_group = ifelse(CollagenScore >= col_cut, "High", "Low"),
+    TGFb_group = ifelse(TGFb_score >= tgfb_cut, "High", "Low"),
+    JointGroup = dplyr::case_when(
+      COL_group == "Low"  & TGFb_group == "Low"  ~ "COL_low / TGFb_low",
+      COL_group == "High" & TGFb_group == "High" ~ "COL_high / TGFb_high",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  dplyr::filter(!is.na(JointGroup)) %>%
+  dplyr::mutate(
+    JointGroup = factor(
+      JointGroup,
+      levels = c("COL_low / TGFb_low", "COL_high / TGFb_high")
+    )
+  )
+
+table(surv_df$JointGroup)
+stopifnot(length(unique(surv_df$JointGroup)) == 2)
+
+```
+
+```{r}
+# ============================================================
+# Kaplan–Meier: Double-low vs Double-high
+# ============================================================
+
+fit_km <- survfit(
+  Surv(OS_days, OS_event) ~ JointGroup,
+  data = surv_df
+)
+
+fit_km
+
+```
+
+```{r}
+# ============================================================
+# Survival plot
+# ============================================================
+
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+p_surv <- ggsurvplot(
+  fit_km,
+  data = surv_df,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = FALSE,
+  palette = c("steelblue", "firebrick"),
+  legend.title = "",
+  legend.labs = c("Low COL / Low TGF-β", "High COL / High TGF-β"),
+  xlab = "Time (days)",
+  ylab = "Overall survival probability",
+  title = "Combined collagen and TGF-β signaling stratify survival in primary GBM",
+  risk.table.height = 0.25,
+  ggtheme = theme_bw(base_size = 11)
+)
+
+print(p_surv)
+
+
+```
+```{r}
+ggsave(
+  filename = file.path(out_dir, "Collagen_TGFB_Combined_Survival_pGBM_curve_only.pdf"),
   plot     = p_surv$plot,
   device   = cairo_pdf,
   width    = 6,
