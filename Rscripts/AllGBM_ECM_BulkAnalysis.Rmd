@@ -2263,6 +2263,77 @@ ggsave(
 )
 ```
 
+```{r}
+
+# Survival with only Col Score in all GBM samples
+
+stopifnot(
+  "CollagenScore" %in% colnames(sample_meta_all),
+  "OS_days" %in% colnames(sample_meta_all),
+  "OS_event" %in% colnames(sample_meta_all)
+)
+
+
+
+surv_df <- sample_meta_all %>%
+  dplyr::filter(group %in% c("GBM", "rGBM")) %>%
+  dplyr::filter(!is.na(CollagenScore)) %>%
+  dplyr::filter(!is.na(OS_days), !is.na(OS_event))
+
+
+col_cut <- median(surv_df$CollagenScore, na.rm = TRUE)
+
+surv_df <- surv_df %>%
+  dplyr::mutate(
+    COL_group = ifelse(CollagenScore >= col_cut, "Collagen High", "Collagen Low"),
+    COL_group = factor(COL_group, levels = c("Collagen Low", "Collagen High"))
+  )
+
+table(surv_df$COL_group)
+
+stopifnot(length(unique(surv_df$COL_group)) == 2)
+
+```
+```{r}
+fit_km_col <- survfit(
+  Surv(OS_days, OS_event) ~ COL_group,
+  data = surv_df
+)
+
+```
+
+```{r}
+p_surv_col <- ggsurvplot(
+  fit_km_col,
+  data = surv_df,
+  risk.table = TRUE,
+  pval = TRUE,
+  conf.int = FALSE,
+  palette = c("steelblue", "firebrick"),
+  legend.title = "",
+  legend.labs = c("Collagen Low", "Collagen High"),
+  xlab = "Time (days)",
+  ylab = "Overall survival probability",
+  title = "Collagen score stratifies survival in GBM",
+  risk.table.height = 0.25,
+  ggtheme = theme_bw(base_size = 11)
+)
+
+print(p_surv_col)
+
+```
+```{r}
+ggsave(
+  filename = file.path(out_dir, "Collagen_Survival_allGBM.pdf"),
+  plot     = p_surv_col$plot,
+  device   = cairo_pdf,
+  width    = 6,
+  height   = 5,
+  units    = "in",
+  dpi      = 300
+)
+```
+
 
 ## TCGA GBM COL Analysis
 
