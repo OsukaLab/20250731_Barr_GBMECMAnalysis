@@ -604,16 +604,23 @@ label_df <- vol_df %>%
   dplyr::arrange(desc(logFC)) %>%
   dplyr::slice_head(n = top_n)
 
+genes_highlight <- c("COL1A1", "COL1A2", "COL3A1")
+
 ctrl_gbm_volcano <- ggplot(vol_df, aes(logFC, neglog10FDR)) +
+  # Base points
   geom_point(aes(color = direction), alpha = 0.6, size = 1.2) +
-  geom_text_repel(
-    data = label_df,
-    aes(label = Gene_Name),
-    size = 3,
-    max.overlaps = Inf
+  
+  # Highlight collagen genes (larger)
+  geom_point(
+    data = subset(vol_df, Gene_Name %in% genes_highlight),
+    aes(logFC, neglog10FDR, color = direction),
+    size = 3.5,
+    alpha = 1
   ) +
+  
   geom_hline(yintercept = -log10(fdr_cutoff), linetype = "dashed") +
   geom_vline(xintercept = c(-logfc_cutoff, logfc_cutoff), linetype = "dotted") +
+  
   scale_color_manual(
     values = c(
       "Up in GBM" = "firebrick",
@@ -621,24 +628,27 @@ ctrl_gbm_volcano <- ggplot(vol_df, aes(logFC, neglog10FDR)) +
       "Not significant" = "grey70"
     )
   ) +
+  
   labs(
     title = "Control vs All GBM (GBM + rGBM)",
     subtitle = paste0(
       "FDR < ", fdr_cutoff,
-      " | |logFC| ≥ ", logfc_cutoff,
-      " (Top ", top_n, " GBM-up labeled)"
+      " | |logFC| ≥ ", logfc_cutoff
     ),
     x = "logFC (GBM / Control)",
     y = "-log10(FDR)",
     color = ""
   ) +
+  
   theme_bw(base_size = 11) +
   theme(
+    panel.grid.major = element_blank(),
     panel.grid.minor = element_blank(),
     legend.position = "top"
   )
 
 print(ctrl_gbm_volcano)
+
 
 # ============================================================
 # Save volcano plot 
@@ -1957,6 +1967,106 @@ ggsave(
 )
 
 ```
+#### KEGG analysis of COL scoring
+
+```{r}
+stopifnot(exists("de_col_high_vs_low"))
+
+
+gene_ranks_col <- de_col_high_vs_low$logFC
+names(gene_ranks_col) <- de_col_high_vs_low$Gene_Name
+
+gene_ranks_col <- gene_ranks_col[!is.na(names(gene_ranks_col))]
+gene_ranks_col <- gene_ranks_col[!duplicated(names(gene_ranks_col))]
+gene_ranks_col <- sort(gene_ranks_col, decreasing = TRUE)
+
+stopifnot(length(gene_ranks_col) > 1000)
+
+```
+
+```{r}
+conv <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = names(gene_ranks_col),
+  keytype = "SYMBOL",
+  columns = "ENTREZID"
+) %>%
+  dplyr::filter(!is.na(ENTREZID)) %>%
+  dplyr::distinct(SYMBOL, .keep_all = TRUE)
+
+gene_ranks_kegg <- gene_ranks_col[conv$SYMBOL]
+names(gene_ranks_kegg) <- conv$ENTREZID
+gene_ranks_kegg <- sort(gene_ranks_kegg, decreasing = TRUE)
+
+length(gene_ranks_kegg)
+
+```
+
+```{r}
+gsea_col_kegg <- gseKEGG(
+  geneList     = gene_ranks_kegg,
+  organism     = "hsa",
+  minGSSize    = 15,
+  maxGSSize    = 500,
+  pvalueCutoff = 0.05,
+  verbose      = FALSE
+)
+
+head(gsea_col_kegg@result[, c("ID","Description","NES","pvalue","p.adjust")])
+sum(gsea_col_kegg@result$p.adjust < 0.05, na.rm = TRUE)
+
+```
+
+```{r}
+top30_kegg_pos <- gsea_col_kegg@result %>%
+  dplyr::filter(!is.na(p.adjust)) %>%
+  dplyr::filter(NES > 0) %>%
+  dplyr::arrange(desc(NES)) %>%
+  dplyr::slice_head(n = 30)
+
+top30_kegg_pos %>%
+  dplyr::select(ID, Description, NES, p.adjust)
+
+```
+```{r}
+stopifnot(exists("gsea_col_kegg"))
+
+# ---- Prepare top 10 positively enriched KEGG pathways ----
+kegg_top10_pos <- gsea_col_kegg@result %>%
+  dplyr::filter(!is.na(p.adjust)) %>%
+  dplyr::filter(NES > 0) %>%                 # CollagenHigh-enriched
+  dplyr::arrange(desc(NES)) %>%
+  dplyr::slice_head(n = 10) %>%
+  dplyr::mutate(
+    Description = factor(Description, levels = rev(Description))
+  )
+
+kegg_top10_pos
+
+```
+```{r}
+kegg_bar_top10 <- ggplot(kegg_top10_pos,
+                         aes(x = Description, y = NES)) +
+  geom_col(fill = "firebrick", width = 0.7) +
+  coord_flip(
+    ylim = c(2, max(kegg_top10_pos$NES) * 1.05)
+  ) +
+  labs(
+    title = "Top KEGG pathways enriched in CollagenHigh tumors",
+    subtitle = "CollagenHigh vs CollagenLow (GBM + rGBM)",
+    x = "",
+    y = "Normalized Enrichment Score (NES)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+print(kegg_bar_top10)
+
+```
+
 
 ### Survival
 
