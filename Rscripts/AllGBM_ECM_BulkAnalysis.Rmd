@@ -1118,12 +1118,10 @@ write.csv(
 ```{r}
 # Volcano: rGBM vs GBM
 
-
 stopifnot(exists("de_rgbm_vs_gbm"))
 
 fdr_cutoff   <- 0.05
 logfc_cutoff <- 1
-top_n <- 15
 
 vol_rg <- de_rgbm_vs_gbm %>%
   dplyr::mutate(
@@ -1132,22 +1130,16 @@ vol_rg <- de_rgbm_vs_gbm %>%
       adj.P.Val < fdr_cutoff & logFC >=  logfc_cutoff ~ "Up in rGBM",
       adj.P.Val < fdr_cutoff & logFC <= -logfc_cutoff ~ "Up in GBM",
       TRUE ~ "Not significant"
-    )
+    ),
+    point_size = ifelse(Gene_Name %in% c("COL1A1", "COL3A1"), 3.5, 1.2)
   )
 
-label_rg <- vol_rg %>%
-  dplyr::filter(direction == "Up in rGBM") %>%
-  dplyr::arrange(desc(logFC)) %>%
-  dplyr::slice_head(n = top_n)
-
 rgbm_volcano <- ggplot(vol_rg, aes(x = logFC, y = neglog10FDR)) +
-  geom_point(aes(color = direction), alpha = 0.6, size = 1.2) +
-  geom_text_repel(
-    data = label_rg,
-    aes(label = Gene_Name),
-    size = 3,
-    max.overlaps = Inf
+  geom_point(
+    aes(color = direction, size = point_size),
+    alpha = 0.7
   ) +
+  scale_size_identity() +   # important — uses the actual numeric sizes
   geom_hline(yintercept = -log10(fdr_cutoff), linetype = "dashed") +
   geom_vline(xintercept = c(-logfc_cutoff, logfc_cutoff), linetype = "dotted") +
   scale_color_manual(
@@ -1161,8 +1153,7 @@ rgbm_volcano <- ggplot(vol_rg, aes(x = logFC, y = neglog10FDR)) +
     title = "rGBM vs Primary GBM",
     subtitle = paste0(
       "FDR < ", fdr_cutoff,
-      " | |logFC| ≥ ", logfc_cutoff,
-      " (Top ", top_n, " rGBM-up labeled)"
+      " | |logFC| ≥ ", logfc_cutoff
     ),
     x = "logFC (rGBM / GBM)",
     y = "-log10(FDR)",
@@ -1177,14 +1168,11 @@ rgbm_volcano <- ggplot(vol_rg, aes(x = logFC, y = neglog10FDR)) +
 
 print(rgbm_volcano)
 
-stopifnot(exists("vol_rg"))
-
 write.csv(
   vol_rg,
   file = "/Data/Outputs/Manuscript/rGBM_vs_GBM_volcano.csv",
   row.names = FALSE
 )
-
 ```
 ```{r}
 out_dir <- "/Data/Outputs/Manuscript"
@@ -2426,12 +2414,16 @@ p_surv_col <- ggsurvplot(
   ylab = "Overall survival probability",
   title = "Collagen score stratifies survival in GBM",
   risk.table.height = 0.25,
-  ggtheme = theme_bw(base_size = 11)
+  ggtheme = theme_bw(base_size = 11) +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
 )
 
 print(p_surv_col)
-
 ```
+
 ```{r}
 ggsave(
   filename = file.path(out_dir, "Collagen_Survival_allGBM.pdf"),
