@@ -1469,15 +1469,14 @@ write.csv(
 ```
 
 ```{r}
-# ============================================================
 # Volcano: CollagenHigh vs CollagenLow (ALL tumors)
-# ============================================================
+# Label top 10 up + top 10 down
 
 stopifnot(exists("de_col_high_vs_low"))
 
 fdr_cutoff   <- 0.05
 logfc_cutoff <- 1
-top_n <- 15
+top_n <- 10
 
 vol_col <- de_col_high_vs_low %>%
   dplyr::mutate(
@@ -1489,14 +1488,22 @@ vol_col <- de_col_high_vs_low %>%
     )
   )
 
-label_col <- vol_col %>%
+# --- label top N in each direction ---
+label_high <- vol_col %>%
   dplyr::filter(direction == "Up in CollagenHigh") %>%
-  dplyr::arrange(desc(logFC)) %>%
+  dplyr::arrange(dplyr::desc(logFC)) %>%
   dplyr::slice_head(n = top_n)
+
+label_low <- vol_col %>%
+  dplyr::filter(direction == "Up in CollagenLow") %>%
+  dplyr::arrange(logFC) %>%  # most negative first
+  dplyr::slice_head(n = top_n)
+
+label_col <- dplyr::bind_rows(label_high, label_low)
 
 col_volcano <- ggplot(vol_col, aes(x = logFC, y = neglog10FDR)) +
   geom_point(aes(color = direction), alpha = 0.6, size = 1.2) +
-  geom_text_repel(
+  ggrepel::geom_text_repel(
     data = label_col,
     aes(label = Gene_Name),
     size = 3,
@@ -1516,7 +1523,7 @@ col_volcano <- ggplot(vol_col, aes(x = logFC, y = neglog10FDR)) +
     subtitle = paste0(
       "FDR < ", fdr_cutoff,
       " | |logFC| ≥ ", logfc_cutoff,
-      " (Top ", top_n, " High-up labeled)"
+      " (Top ", top_n, " High-up + Top ", top_n, " Low-up labeled)"
     ),
     x = "logFC (High / Low)",
     y = "-log10(FDR)",
@@ -1531,6 +1538,8 @@ col_volcano <- ggplot(vol_col, aes(x = logFC, y = neglog10FDR)) +
 
 print(col_volcano)
 
+```
+```{r}
 out_dir <- "/Data/Outputs/Manuscript"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
@@ -1549,8 +1558,8 @@ write.csv(
   file = file.path(out_dir, "CollagenHigh_vs_CollagenLow_ALLtumors_volcano.csv"),
   row.names = FALSE
 )
-
 ```
+
 
 ```{r}
 # GSEA: CollagenHigh vs CollagenLow (ALL tumors) — GO BP
@@ -1599,11 +1608,11 @@ table(gsea_col_bp@result$NES > 0)
 
 stopifnot(exists("gsea_col_bp"))
 
-top20_pos_col <- gsea_col_bp@result %>%
+top10_pos_col <- gsea_col_bp@result %>%
   dplyr::filter(!is.na(p.adjust)) %>%
   dplyr::filter(NES > 0) %>%        # Positive NES = enriched in CollagenHigh
   dplyr::arrange(desc(NES)) %>%
-  dplyr::slice_head(n = 20) %>%
+  dplyr::slice_head(n = 10) %>%
   dplyr::select(
     ID,
     Description,
@@ -1613,7 +1622,7 @@ top20_pos_col <- gsea_col_bp@result %>%
     core_enrichment
   )
 
-top20_pos_col
+top10_pos_col
 
 ```
 ```{r}
@@ -1621,18 +1630,18 @@ out_dir <- "/Data/Outputs/Manuscript"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 write.csv(
-  top20_pos_col,
-  file = file.path(out_dir, "CollagenHigh_vs_Low_GSEA_Top20_Positive_BP.csv"),
+  top10_pos_col,
+  file = file.path(out_dir, "CollagenHigh_vs_Low_GSEA_Top10_Positive_BP.csv"),
   row.names = FALSE
 )
 
 ```
 
 ```{r}
-# Bar plot: Top 20 enriched in CollagenHigh
+# Bar plot: Top 10 enriched in CollagenHigh
 
 
-gsea_df_col <- top20_pos_col %>%
+gsea_df_col <- top10_pos_col %>%
   dplyr::mutate(
     Description = factor(Description, levels = rev(Description))
   )
@@ -1658,7 +1667,7 @@ gsea_bar_col <- ggplot(gsea_df_col, aes(x = Description, y = NES)) +
 print(gsea_bar_col)
 
 ggsave(
-  filename = file.path(out_dir, "CollagenHigh_vs_Low_GSEA_Top20_Positive_BP.pdf"),
+  filename = file.path(out_dir, "CollagenHigh_vs_Low_GSEA_Top10_Positive_BP.pdf"),
   plot     = gsea_bar_col,
   device   = pdf,
   width    = 15,
@@ -2575,5 +2584,205 @@ ggsave(
   dpi      = 300
 )
 
+```
+
+## UCSC Spatial Transcriptomic Data
+
+```{r}
+input_dir <- "/Data/Inputs/UCSC"
+```
+
+
+```{r}
+deg <- read.csv(file.path(input_dir, "all_samples_COL_high_vs_low_DE_genes.csv"))
+
+immune_scores <- read.csv(file.path(input_dir, "all_samples_immune_cell_scores.csv"))
+```
+
+```{r}
+fdr_cutoff <- 0.05
+logfc_cutoff <- 1
+
+vol_df <- deg %>%
+  mutate(
+    neglog10FDR = -log10(p_val_adj),
+    direction = case_when(
+      p_val_adj < fdr_cutoff & avg_log2FC >= logfc_cutoff ~ "Up in COL High",
+      p_val_adj < fdr_cutoff & avg_log2FC <= -logfc_cutoff ~ "Up in COL Low",
+      TRUE ~ "Not significant"
+    )
+  )
+```
+
+```{r}
+label_df <- vol_df %>%
+  filter(direction == "Up in COL High") %>%
+  arrange(desc(avg_log2FC)) %>%
+  slice_head(n = 10)
+```
+
+```{r}
+volcano_col <- ggplot(vol_df,
+       aes(x = avg_log2FC, y = neglog10FDR, color = direction)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_vline(xintercept = c(-1,1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_text_repel(
+    data = label_df,
+    aes(label = gene),
+    size = 4
+  ) +
+  scale_color_manual(values = c(
+    "Up in COL High" = "#D73027",
+    "Up in COL Low" = "#4575B4",
+    "Not significant" = "grey70"
+  )) +
+  theme_classic() +
+  labs(
+    x = "log2 Fold Change",
+    y = "-log10(FDR)",
+    title = "COL High vs COL Low Differential Expression"
+  )
+
+volcano_col
+```
+```{r}
+gene_list <- deg$avg_log2FC
+names(gene_list) <- deg$gene
+gene_list <- sort(gene_list, decreasing = TRUE)
+```
+
+```{r}
+deg_clean <- deg %>%
+  mutate(
+    gene = as.character(gene),
+    avg_log2FC = as.numeric(avg_log2FC)
+  ) %>%
+  filter(!is.na(gene), gene != "") %>%
+  filter(is.finite(avg_log2FC)) %>%
+  group_by(gene) %>%
+  summarise(avg_log2FC = mean(avg_log2FC), .groups = "drop")
+
+gene_list <- deg_clean$avg_log2FC
+names(gene_list) <- deg_clean$gene
+gene_list <- sort(gene_list, decreasing = TRUE)
+```
+
+```{r}
+gsea_bp <- gseGO(
+  geneList = gene_list,
+  OrgDb = org.Hs.eg.db,
+  keyType = "SYMBOL",
+  ont = "BP",
+  minGSSize = 10,
+  maxGSSize = 500,
+  pvalueCutoff = 0.05,
+  verbose = FALSE
+)
+```
+
+```{r}
+top10_pos_bp <- gsea_bp@result %>%
+  dplyr::filter(!is.na(p.adjust)) %>%
+  dplyr::filter(NES > 0) %>%
+  dplyr::arrange(desc(NES)) %>%
+  dplyr::slice_head(n = 10) %>%
+  dplyr::select(
+    ID,
+    Description,
+    NES,
+    pvalue,
+    p.adjust,
+    core_enrichment
+  )
+```
+
+```{r}
+gsea_df_bp <- top10_pos_bp %>%
+  dplyr::mutate(
+    Description = factor(Description, levels = rev(Description))
+  )
+```
+
+```{r}
+gsea_bar_bp <- ggplot(gsea_df_bp, aes(x = Description, y = NES)) +
+  geom_col(fill = "firebrick", width = 0.7) +
+  coord_flip(
+    ylim = c(min(gsea_df_bp$NES) * 0.95,
+             max(gsea_df_bp$NES) * 1.05)
+  ) +
+  labs(
+    title = "Top GO biological processes enriched in CollagenHigh tumors",
+    subtitle = "CollagenHigh vs CollagenLow (GSEA, GO:BP)",
+    x = "",
+    y = "Normalized Enrichment Score (NES)"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+print(gsea_bar_bp)
+```
+```{r}
+ggsave(
+  filename = file.path("/Data/Outputs/Manuscript/UCSC",
+                       "CollagenHigh_vs_Low_GSEA_Top10_Positive_BP.pdf"),
+  plot = gsea_bar_bp,
+  device = pdf,
+  width = 15,
+  height = 6,
+  units = "in",
+  useDingbats = FALSE
+)
+```
+
+```{r}
+gsea_table <- gsea_bp@result %>%
+  dplyr::select(
+    ID,
+    Description,
+    NES,
+    pvalue,
+    p.adjust,
+    setSize
+  ) %>%
+  dplyr::arrange(desc(NES))
+```
+
+```{r}
+output_dir <- "/Data/Outputs/Manuscript/UCSC"
+
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+write.csv(
+  gsea_table,
+  file = file.path(output_dir, "COL_high_vs_low_GSEA_GO_BP_results.csv"),
+  row.names = FALSE
+)
+```
+
+```{r}
+immune <- read.csv(file.path(input_dir,
+                             "all_samples_immune_cell_scores.csv"))
+
+# Inspect structure
+dim(immune)
+head(immune)
+
+# Confirm key columns exist
+stopifnot(all(c("Spot_ID", "Sample") %in% colnames(immune)))
+
+# Check collagen categories
+unique(immune$COL_Category)
+
+# Identify immune score columns
+immune_score_cols <- setdiff(colnames(immune),
+                             c("Spot_ID", "Sample", "COL_Category"))
+
+immune_score_cols
 ```
 
