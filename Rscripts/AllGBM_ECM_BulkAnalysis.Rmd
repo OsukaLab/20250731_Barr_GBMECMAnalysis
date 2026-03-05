@@ -2766,23 +2766,86 @@ write.csv(
 ```
 
 ```{r}
+
+```
+
+```{r}
+input_dir <- "/Data/Inputs/UCSC"
+
 immune <- read.csv(file.path(input_dir,
                              "all_samples_immune_cell_scores.csv"))
 
-# Inspect structure
-dim(immune)
 head(immune)
+dim(immune)
+```
 
-# Confirm key columns exist
-stopifnot(all(c("Spot_ID", "Sample") %in% colnames(immune)))
+```{r}
+immune_long <- immune %>%
+  pivot_longer(
+    cols = -c(Spot_ID, Sample, COL_Category),
+    names_to = "CellType",
+    values_to = "Score"
+  )
 
-# Check collagen categories
-unique(immune$COL_Category)
+head(immune_long)
+```
+```{r}
+out_dir <- "/Data/Outputs/Manuscript/UCSC"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
-# Identify immune score columns
-immune_score_cols <- setdiff(colnames(immune),
-                             c("Spot_ID", "Sample", "COL_Category"))
+cell_types <- sort(unique(immune_long$CellType))
 
-immune_score_cols
+for (ct in cell_types) {
+
+  df_ct <- immune_long %>% 
+    dplyr::filter(CellType == ct) %>%
+    dplyr::mutate(
+      COL_Category = factor(COL_Category,
+                            levels = c("COL_Low", "COL_High"))
+    )
+
+  p <- ggplot(df_ct,
+              aes(x = COL_Category,
+                  y = Score,
+                  color = COL_Category)) +
+    geom_boxplot(
+      fill = NA,
+      width = 0.6,
+      outlier.shape = NA,
+      linewidth = 0.8
+    ) +
+    geom_point(
+      position = position_jitter(width = 0.15),
+      size = 0.6,
+      alpha = 0.4
+    ) +
+    scale_color_manual(values = c(
+      "COL_High" = "firebrick",
+      "COL_Low"  = "steelblue"
+    )) +
+    scale_y_continuous(limits = c(0, NA), expand = c(0, 0)) +
+    theme_bw(base_size = 11) +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "none"
+    ) +
+    labs(
+      title = paste0(ct, " score by collagen category"),
+      subtitle = "Spatial spot-level immune scores",
+      x = "",
+      y = "Immune score"
+    )
+
+  ggsave(
+    filename = file.path(out_dir, paste0("ImmuneScore_Box_", ct, ".pdf")),
+    plot = p,
+    device = pdf,
+    width = 2.5,
+    height = 3.5,
+    units = "in",
+    useDingbats = FALSE
+  )
+}
 ```
 
