@@ -2135,9 +2135,6 @@ fit_km
 # Survival plot
 # ============================================================
 
-out_dir <- "/Data/Outputs/Manuscript"
-if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
-
 p_surv <- ggsurvplot(
   fit_km,
   data = surv_df,
@@ -2151,12 +2148,19 @@ p_surv <- ggsurvplot(
   ylab = "Overall survival probability",
   title = "Combined collagen and TGF-β signaling stratify survival in GBM",
   risk.table.height = 0.25,
-  ggtheme = theme_bw(base_size = 11)
+  ggtheme = theme_bw(base_size = 11) +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
 )
 
+# force axes to start at 0
+p_surv$plot <- p_surv$plot +
+  scale_x_continuous(limits = c(0, NA), expand = c(0,0)) +
+  scale_y_continuous(limits = c(0, 1), expand = c(0,0))
+
 print(p_surv)
-
-
 ```
 ```{r}
 ggsave(
