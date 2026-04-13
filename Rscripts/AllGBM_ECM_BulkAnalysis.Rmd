@@ -668,6 +668,181 @@ ggsave(
 )
 
 ```
+```{r}
+# CHUNK 1: Sample setup for Control vs rGBM
+
+stopifnot(exists("expr_adj_all"), exists("sample_meta_all"))
+
+# Keep only Control + rGBM samples
+meta_deg_rg <- sample_meta_all %>%
+  dplyr::filter(group %in% c("Control", "rGBM")) %>%
+  dplyr::mutate(
+    group = factor(group, levels = c("Control", "rGBM")),
+    cohort = factor(cohort)
+  )
+
+# Expression matrix subset
+X_deg_rg <- expr_adj_all[, meta_deg_rg$sample_id, drop = FALSE]
+
+# Hard checks
+stopifnot(
+  identical(colnames(X_deg_rg), meta_deg_rg$sample_id),
+  all(!is.na(meta_deg_rg$group)),
+  all(!is.na(meta_deg_rg$cohort))
+)
+
+# Sanity printouts
+table(meta_deg_rg$group)
+table(meta_deg_rg$cohort, meta_deg_rg$group)
+```
+
+```{r}
+# CHUNK 2: Design matrix inspection
+
+design_rg <- model.matrix(~ group + cohort, data = meta_deg_rg)
+
+colnames(design_rg)
+head(design_rg)
+```
+```{r}
+# CHUNK 3: limma fit + DEG extraction
+
+library(limma)
+
+fit_rg <- lmFit(X_deg_rg, design_rg)
+fit_rg <- eBayes(fit_rg)
+
+# Extract DEGs: rGBM vs Control
+de_control_vs_rgbm <- topTable(
+  fit_rg,
+  coef = "grouprGBM",
+  number = Inf,
+  sort.by = "P"
+) %>%
+  tibble::rownames_to_column("Gene_Name") %>%
+  dplyr::arrange(adj.P.Val, P.Value)
+
+# Quick checks
+head(de_control_vs_rgbm, 10)
+summary(de_control_vs_rgbm$logFC)
+table(de_control_vs_rgbm$adj.P.Val < 0.05)
+
+write.csv(
+  de_control_vs_rgbm,
+  file = "/Data/Outputs/Manuscript/Control_vs_rGBM_limma.csv",
+  row.names = FALSE
+)
+```
+```{r}
+# Volcano plot: Control vs rGBM
+
+fdr_cutoff   <- 0.05
+logfc_cutoff <- 1
+top_n <- 10
+
+vol_df_rg <- de_control_vs_rgbm %>%
+  dplyr::mutate(
+    neglog10FDR = -log10(adj.P.Val),
+    direction = dplyr::case_when(
+      adj.P.Val < fdr_cutoff & logFC >=  logfc_cutoff ~ "Up in rGBM",
+      adj.P.Val < fdr_cutoff & logFC <= -logfc_cutoff ~ "Up in Control",
+      TRUE ~ "Not significant"
+    )
+  )
+
+label_df_rg <- vol_df_rg %>%
+  dplyr::filter(direction == "Up in rGBM") %>%
+  dplyr::arrange(desc(logFC)) %>%
+  dplyr::slice_head(n = top_n)
+
+genes_highlight <- c("COL1A1", "COL1A2", "COL3A1")
+
+ctrl_rgbm_volcano <- ggplot(vol_df_rg, aes(logFC, neglog10FDR)) +
+  geom_point(aes(color = direction), alpha = 0.6, size = 1.2) +
+  
+  geom_point(
+    data = subset(vol_df_rg, Gene_Name %in% genes_highlight),
+    aes(logFC, neglog10FDR, color = direction),
+    size = 3.5,
+    alpha = 1
+  ) +
+  
+  geom_hline(yintercept = -log10(fdr_cutoff), linetype = "dashed") +
+  geom_vline(xintercept = c(-logfc_cutoff, logfc_cutoff), linetype = "dotted") +
+  
+  scale_color_manual(
+    values = c(
+      "Up in rGBM" = "firebrick",
+      "Up in Control" = "steelblue",
+      "Not significant" = "grey70"
+    )
+  ) +
+  
+  labs(
+    title = "Control vs rGBM",
+    subtitle = paste0(
+      "FDR < ", fdr_cutoff,
+      " | |logFC| ≥ ", logfc_cutoff
+    ),
+    x = "logFC (rGBM / Control)",
+    y = "-log10(FDR)",
+    color = ""
+  ) +
+  
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+
+print(ctrl_rgbm_volcano)
+
+# Save volcano plot
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+ggsave(
+  filename = file.path(out_dir, "Control_vs_rGBM_Volcano.pdf"),
+  plot     = ctrl_rgbm_volcano,
+  device   = cairo_pdf,
+  width    = 5,
+  height   = 5,
+  units    = "in",
+  dpi      = 300
+)
+```
+```{r}
+# Volcano: Control vs rGBM (COL genes labeled)
+
+genes_highlight <- c("COL1A1", "COL1A2", "COL3A1")
+
+label_col_df <- vol_df_rg %>%
+  dplyr::filter(Gene_Name %in% genes_highlight)
+
+ctrl_rgbm_volcano_collabel <- ctrl_rgbm_volcano +
+  ggrepel::geom_text_repel(
+    data = label_col_df,
+    aes(label = Gene_Name),
+    size = 4,
+    fontface = "bold",
+    color = "black",
+    max.overlaps = Inf
+  )
+
+print(ctrl_rgbm_volcano_collabel)
+```
+```{r}
+ggsave(
+  filename = file.path(out_dir, "Control_vs_rGBM_Volcano_COL_labeled.pdf"),
+  plot     = ctrl_rgbm_volcano_collabel,
+  device   = cairo_pdf,
+  width    = 5,
+  height   = 5,
+  units    = "in",
+  dpi      = 300
+)
+```
 
 ```{r}
 
