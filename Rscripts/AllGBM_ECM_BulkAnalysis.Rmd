@@ -1250,9 +1250,9 @@ gene_df_rg <- expr_adj_all[genes_of_interest, , drop = FALSE] %>%
     values_to = "expr"
   ) %>%
   dplyr::left_join(sample_meta_all, by = "sample_id") %>%
-  dplyr::filter(group %in% c("Control", "rGBM")) %>%
+  dplyr::filter(group %in% c("GBM", "rGBM")) %>%
   dplyr::mutate(
-    group = factor(group, levels = c("Control", "rGBM"))
+    group = factor(group, levels = c("GBM", "rGBM"))
   )
 
 collagen_boxplot_rg <- ggplot(gene_df_rg, aes(x = group, y = expr, fill = group)) +
@@ -1261,12 +1261,12 @@ collagen_boxplot_rg <- ggplot(gene_df_rg, aes(x = group, y = expr, fill = group)
   facet_wrap(~ Gene, scales = "free_y") +
   scale_fill_manual(
     values = c(
-      "Control" = "grey70",
+      "GBM" = "#1f77b4",
       "rGBM" = "#d62728"
     )
   ) +
   labs(
-    title = "Control vs rGBM collagen expression",
+    title = "GBM vs rGBM collagen expression",
     subtitle = "Batch-adjusted log2(FPKM + 1)",
     x = "",
     y = "Expression"
@@ -1282,7 +1282,7 @@ print(collagen_boxplot_rg)
 ```
 ```{r}
 # ============================================================
-# T-tests: Control vs rGBM (per gene)
+# T-tests: GBM vs rGBM (per gene)
 # ============================================================
 
 ttest_tbl <- gene_df_rg %>%
@@ -1301,7 +1301,7 @@ ttest_tbl
 ```
 ```{r}
 # ============================================================
-# Summary stats table: Control vs rGBM collagen genes
+# Summary stats table: GBM vs rGBM collagen genes
 # ============================================================
 
 stopifnot(
@@ -1342,7 +1342,7 @@ summary_stats_tbl_rg
 
 write.csv(
   summary_stats_tbl_rg,
-  file = "/Data/Outputs/Manuscript/COL1A1_COL1A2_COL3A1_Control_vs_rGBM_summary_stats.csv",
+  file = "/Data/Outputs/Manuscript/COL1A1_COL1A2_COL3A1_GBM_vs_rGBM_summary_stats.csv",
   row.names = FALSE
 )
 ```
@@ -1358,7 +1358,7 @@ out_dir <- "/Data/Outputs/Manuscript"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 
 ggsave(
-  filename = file.path(out_dir, "Control_vs_rGBM_COL1A1_COL1A2_COL3A1_boxplot.pdf"),
+  filename = file.path(out_dir, "GBM_vs_rGBM_COL1A1_COL1A2_COL3A1_boxplot.pdf"),
   plot     = collagen_boxplot_rg,
   device   = cairo_pdf,
   width    = 5,
