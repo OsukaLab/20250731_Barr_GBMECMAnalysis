@@ -1195,7 +1195,6 @@ anova_tbl <- gene_df %>%
 
 anova_tbl
 ```
-
 ```{r}
 stopifnot(
   exists("gene_df"),
@@ -1237,6 +1236,139 @@ write.csv(
 )
 
 ```
+
+
+```{r}
+genes_of_interest <- c("COL1A1", "COL1A2", "COL3A1")
+
+gene_df_rg <- expr_adj_all[genes_of_interest, , drop = FALSE] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene") %>%
+  tidyr::pivot_longer(
+    -Gene,
+    names_to = "sample_id",
+    values_to = "expr"
+  ) %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::filter(group %in% c("Control", "rGBM")) %>%
+  dplyr::mutate(
+    group = factor(group, levels = c("Control", "rGBM"))
+  )
+
+collagen_boxplot_rg <- ggplot(gene_df_rg, aes(x = group, y = expr, fill = group)) +
+  geom_boxplot(outlier.shape = NA, width = 0.6, alpha = 0.75) +
+  geom_jitter(width = 0.15, size = 0.9, alpha = 0.45) +
+  facet_wrap(~ Gene, scales = "free_y") +
+  scale_fill_manual(
+    values = c(
+      "Control" = "grey70",
+      "rGBM" = "#d62728"
+    )
+  ) +
+  labs(
+    title = "Control vs rGBM collagen expression",
+    subtitle = "Batch-adjusted log2(FPKM + 1)",
+    x = "",
+    y = "Expression"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "none"
+  )
+
+print(collagen_boxplot_rg)
+```
+```{r}
+# ============================================================
+# T-tests: Control vs rGBM (per gene)
+# ============================================================
+
+ttest_tbl <- gene_df_rg %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(
+    p_value = t.test(expr ~ group)$p.value,
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    p_adj = p.adjust(p_value, method = "BH"),
+    p_value = signif(p_value, 3),
+    p_adj   = signif(p_adj, 3)
+  )
+
+ttest_tbl
+```
+```{r}
+# ============================================================
+# Summary stats table: Control vs rGBM collagen genes
+# ============================================================
+
+stopifnot(
+  exists("gene_df_rg"),
+  exists("ttest_tbl")
+)
+
+# ---- 1) Sample counts per group per gene ----
+counts_tbl_rg <- gene_df_rg %>%
+  dplyr::group_by(Gene, group) %>%
+  dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+  tidyr::pivot_wider(
+    names_from = group,
+    values_from = n,
+    names_prefix = "n_"
+  )
+
+# ---- 2) Group means and SDs ----
+expr_summary_rg <- gene_df_rg %>%
+  dplyr::group_by(Gene, group) %>%
+  dplyr::summarise(
+    mean_expr = mean(expr, na.rm = TRUE),
+    sd_expr   = sd(expr, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = group,
+    values_from = c(mean_expr, sd_expr)
+  )
+
+# ---- 3) Combine counts + expression summary + t-test ----
+summary_stats_tbl_rg <- counts_tbl_rg %>%
+  dplyr::left_join(expr_summary_rg, by = "Gene") %>%
+  dplyr::left_join(ttest_tbl, by = "Gene") %>%
+  dplyr::arrange(Gene)
+
+summary_stats_tbl_rg
+
+write.csv(
+  summary_stats_tbl_rg,
+  file = "/Data/Outputs/Manuscript/COL1A1_COL1A2_COL3A1_Control_vs_rGBM_summary_stats.csv",
+  row.names = FALSE
+)
+```
+
+```{r}
+# ============================================================
+# Save Control vs rGBM collagen boxplot
+# ============================================================
+
+stopifnot(exists("collagen_boxplot_rg"))
+
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+ggsave(
+  filename = file.path(out_dir, "Control_vs_rGBM_COL1A1_COL1A2_COL3A1_boxplot.pdf"),
+  plot     = collagen_boxplot_rg,
+  device   = cairo_pdf,
+  width    = 5,
+  height   = 3,
+  units    = "in",
+  dpi      = 300
+)
+```
+
+
 ```{r}
 # ============================================================
 # DEG: rGBM vs GBM
