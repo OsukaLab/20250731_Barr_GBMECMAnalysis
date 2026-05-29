@@ -955,6 +955,91 @@ ggsave(
 )
 ```
 ```{r}
+# Terms of interest
+ecm_terms <- c(
+  "extracellular matrix organization",
+  "collagen fibril organization"
+)
+
+# Extract results
+ecm_gsea_summary <- gsea_go_bp@result %>%
+  dplyr::filter(Description %in% ecm_terms) %>%
+  dplyr::select(
+    ID,
+    Description,
+    NES,
+    pvalue,
+    p.adjust,
+    setSize,
+    core_enrichment
+  )
+
+ecm_gsea_summary
+
+# Save CSV
+write.csv(
+  ecm_gsea_summary,
+  file = "/Data/Outputs/Manuscript/ECM_GSEA_Summary.csv",
+  row.names = FALSE
+)
+```
+
+```{r}
+ecm_id <- gsea_go_bp@result %>%
+  dplyr::filter(Description == "extracellular matrix organization") %>%
+  dplyr::pull(ID)
+
+p_ecm <- gseaplot2(
+  gsea_go_bp,
+  geneSetID = ecm_id,
+  title = "Extracellular Matrix Organization"
+)
+
+ggsave(
+  filename = "/Data/Outputs/Manuscript/GSEA_Extracellular_Matrix_Organization.pdf",
+  plot = p_ecm,
+  device = cairo_pdf,
+  width = 6,
+  height = 5
+)
+```
+
+```{r}
+collagen_id <- gsea_go_bp@result %>%
+  dplyr::filter(Description == "collagen fibril organization") %>%
+  dplyr::pull(ID)
+
+p_collagen <- gseaplot2(
+  gsea_go_bp,
+  geneSetID = collagen_id,
+  title = "Collagen Fibril Organization"
+)
+
+ggsave(
+  filename = "/Data/Outputs/Manuscript/GSEA_Collagen_Fibril_Organization.pdf",
+  plot = p_collagen,
+  device = cairo_pdf,
+  width = 6,
+  height = 5
+)
+```
+```{r}
+ggsave(
+  "ECM_Organization_GSEA.pdf",
+  p_ecm,
+  width = 6,
+  height = 5
+)
+
+ggsave(
+  "Collagen_Fibril_Organization_GSEA.pdf",
+  p_collagen,
+  width = 6,
+  height = 5
+)
+```
+
+```{r}
 
 # Get genes annotated to GO:0031012 (extracellular matrix)
 
