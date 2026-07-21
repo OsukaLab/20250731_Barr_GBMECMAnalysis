@@ -1322,7 +1322,7 @@ write.csv(
 )
 
 ```
-
+##### rGBM vs GBM
 
 ```{r}
 # ============================================================
@@ -1551,6 +1551,130 @@ ggsave(
   useDingbats = FALSE
 )
 
+```
+
+```{r}
+###############################################################
+## Top Non-Immune GO Biological Processes
+## rGBM vs GBM GSEA
+###############################################################
+
+stopifnot(exists("gsea_rg_bp"))
+
+#-------------------------------------------------------
+# Define immune-related keywords
+#-------------------------------------------------------
+
+immune_keywords_rg <- c(
+  "immune",
+  "immunity",
+  "lymphocyte",
+  "leukocyte",
+  "T cell",
+  "T-cell",
+  "B cell",
+  "B-cell",
+  "natural killer",
+  "antigen",
+  "interferon",
+  "cytokine",
+  "chemokine",
+  "macrophage",
+  "monocyte",
+  "neutrophil",
+  "dendritic",
+  "microglia",
+  "myeloid",
+  "granulocyte",
+  "adaptive immune",
+  "innate immune",
+  "defense response",
+  "inflammatory",
+  "inflammation",
+  "phagocytosis",
+  "immunoglobulin",
+  "complement",
+  "major histocompatibility",
+  "MHC",
+  "interleukin",
+  "toll-like receptor",
+  "tumor necrosis factor",
+  "response to virus",
+  "viral response",
+  "antimicrobial",
+  "lipopolysaccharide",
+  "bacterial",
+  "mononuclear"
+  
+)
+
+# Combine terms into one search pattern
+immune_pattern_rg <- paste(
+  immune_keywords_rg,
+  collapse = "|"
+)
+
+#-------------------------------------------------------
+# Prepare significant rGBM-enriched GSEA results
+#-------------------------------------------------------
+
+gsea_sig_pos_rg <- gsea_rg_bp@result %>%
+  dplyr::filter(
+    !is.na(p.adjust),
+    NES > 0,
+    p.adjust < 0.05
+  )
+
+#-------------------------------------------------------
+# Remove immune-related terms from the DISPLAYED results
+#-------------------------------------------------------
+
+gsea_nonimmune_rg <- gsea_sig_pos_rg %>%
+  dplyr::filter(
+    !grepl(
+      immune_pattern_rg,
+      Description,
+      ignore.case = TRUE
+    )
+  ) %>%
+  dplyr::arrange(desc(NES))
+
+# Inspect the top remaining terms
+gsea_nonimmune_rg %>%
+  dplyr::select(
+    ID,
+    Description,
+    NES,
+    pvalue,
+    p.adjust
+  ) %>%
+  dplyr::slice_head(n = 30)
+```
+
+```{r}
+ecm_collagen_rank_rg <- gsea_nonimmune_rg %>%
+  dplyr::mutate(
+    nonimmune_rank = dplyr::row_number()
+  ) %>%
+  dplyr::filter(
+    grepl(
+      "extracellular matrix|extracellular structure|collagen",
+      Description,
+      ignore.case = TRUE
+    )
+  ) %>%
+  dplyr::select(
+    nonimmune_rank,
+    ID,
+    Description,
+    NES,
+    pvalue,
+    p.adjust,
+    setSize,
+    core_enrichment
+  )
+
+ecm_collagen_rank_rg
 ```
 
 ```{r}
@@ -2328,6 +2452,608 @@ print(kegg_bar_top10)
 
 
 ### Survival
+
+Testing difference in survival outcomes for top rGBM vs GBM expressed genes. 
+
+```{r}
+# ============================================================
+# Survival analysis of top rGBM-upregulated genes
+# All tumor samples: GBM + rGBM
+# ============================================================
+
+genes_survival <- c(
+  "COL1A1",
+  "COL1A2",
+  "CHI3L1",
+  "IGHG1",
+  "IGKC",
+  "COL3A1",
+  "FCGR2B",
+  "SERPINE1"
+)
+
+# Confirm that all genes are present
+missing_genes <- setdiff(genes_survival, rownames(expr_adj_all))
+
+if (length(missing_genes) > 0) {
+  stop(
+    "The following genes are missing from expr_adj_all: ",
+    paste(missing_genes, collapse = ", ")
+  )
+}
+
+# Keep only tumor samples with usable survival information
+survival_meta <- sample_meta_all %>%
+  dplyr::filter(
+    group %in% c("GBM", "rGBM"),
+    !is.na(OS_days),
+    !is.na(OS_event),
+    OS_days > 0,
+    OS_event %in% c(0, 1)
+  ) %>%
+  dplyr::mutate(
+    group = factor(group, levels = c("GBM", "rGBM")),
+    cohort = factor(cohort),
+    OS_years = OS_days / 365.25
+  )
+
+# Ensure expression columns are available
+stopifnot(all(survival_meta$sample_id %in% colnames(expr_adj_all)))
+
+# Extract expression for the seven genes
+survival_expr_long <- expr_adj_all[
+  genes_survival,
+  survival_meta$sample_id,
+  drop = FALSE
+] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene") %>%
+  tidyr::pivot_longer(
+    cols = -Gene,
+    names_to = "sample_id",
+    values_to = "expression"
+  ) %>%
+  dplyr::left_join(survival_meta, by = "sample_id")
+
+# Basic checks
+table(survival_expr_long$Gene)
+table(survival_meta$group)
+table(survival_meta$cohort)
+```
+
+```{r}
+survival_expr_long <- survival_expr_long %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::mutate(
+    median_expression = median(expression, na.rm = TRUE),
+    Expression_Group = ifelse(
+      expression >= median_expression,
+      "High",
+      "Low"
+    ),
+    Expression_Group = factor(
+      Expression_Group,
+      levels = c("Low", "High")
+    )
+  ) %>%
+  dplyr::ungroup()
+
+# Check group sizes
+survival_expr_long %>%
+  dplyr::count(Gene, Expression_Group)
+```
+```{r}
+out_dir <- "/Data/Outputs/Manuscript/Gene_Survival"
+
+if (!dir.exists(out_dir)) {
+  dir.create(out_dir, recursive = TRUE)
+}
+
+km_plot_list <- list()
+
+for (gene_i in genes_survival) {
+
+  gene_data <- survival_expr_long %>%
+    dplyr::filter(Gene == gene_i)
+
+  km_fit <- survival::survfit(
+    survival::Surv(OS_years, OS_event) ~ Expression_Group,
+    data = gene_data
+  )
+
+  km_plot <- survminer::ggsurvplot(
+    fit = km_fit,
+    data = gene_data,
+    risk.table = TRUE,
+    pval = TRUE,
+    conf.int = FALSE,
+    censor = TRUE,
+    palette = c("steelblue", "firebrick"),
+    legend.title = gene_i,
+    legend.labs = c("Low", "High"),
+    xlab = "Overall survival (years)",
+    ylab = "Overall survival probability",
+    title = paste0(gene_i, " expression and overall survival"),
+    subtitle = "All tumor samples: GBM + rGBM | Median expression split",
+    break.time.by = 1,
+    risk.table.height = 0.25,
+    ggtheme = theme_bw(base_size = 11)
+  )
+
+  km_plot$plot <- km_plot$plot +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "top"
+    )
+
+  km_plot$table <- km_plot$table +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+
+  km_plot_list[[gene_i]] <- km_plot
+
+  # Save plot with risk table
+  pdf(
+    file = file.path(
+      out_dir,
+      paste0(gene_i, "_AllTumors_KM_MedianSplit.pdf")
+    ),
+    width = 6,
+    height = 6,
+    useDingbats = FALSE
+  )
+
+  print(km_plot)
+
+  dev.off()
+}
+```
+
+Lets repeat this anaysis but only for rGBm sampes. Since we already established that those previous genes are upregulated in rGBM the survival difference mayjust be because the statification measured suvival betweenn primary GBM and rGBM. 
+
+```{r}
+
+###############################################################
+## Exploratory optimal-cutpoint survival analysis
+## Recurrent GBM samples only
+###############################################################
+
+
+genes_survival <- c(
+  "COL1A1",
+  "CHI3L1",
+  "IGHG1",
+  "IGKC",
+  "COL3A1",
+  "FCGR2B",
+  "SERPINE1"
+)
+
+# Confirm that all genes are present
+missing_genes <- setdiff(
+  genes_survival,
+  rownames(expr_adj_all)
+)
+
+if (length(missing_genes) > 0) {
+  stop(
+    "Missing genes: ",
+    paste(missing_genes, collapse = ", ")
+  )
+}
+
+#-------------------------------------------------------
+# Keep ONLY recurrent GBM samples
+#-------------------------------------------------------
+
+survival_meta <- sample_meta_all %>%
+  dplyr::filter(
+    group == "rGBM",
+    !is.na(OS_days),
+    !is.na(OS_event),
+    OS_days > 0,
+    OS_event %in% c(0, 1)
+  ) %>%
+  dplyr::mutate(
+    cohort = factor(cohort),
+    OS_years = OS_days / 365.25
+  )
+
+# Check sample numbers
+table(survival_meta$cohort)
+table(survival_meta$OS_event)
+nrow(survival_meta)
+```
+
+```{r}
+survival_expr_long <- expr_adj_all[
+  genes_survival,
+  survival_meta$sample_id,
+  drop = FALSE
+] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene") %>%
+  tidyr::pivot_longer(
+    cols = -Gene,
+    names_to = "sample_id",
+    values_to = "expression"
+  ) %>%
+  dplyr::left_join(
+    survival_meta,
+    by = "sample_id"
+  ) %>%
+  dplyr::filter(
+    !is.na(expression),
+    !is.na(OS_years),
+    !is.na(OS_event)
+  )
+
+# Confirm sample count for each gene
+survival_expr_long %>%
+  dplyr::count(Gene)
+```
+
+```{r}
+# Function to calculate the optimal cutpoint for one gene
+get_optimal_cutpoint <- function(df) {
+
+  gene_name <- unique(df$Gene)
+
+  cutpoint_object <- survminer::surv_cutpoint(
+    data = df,
+    time = "OS_years",
+    event = "OS_event",
+    variables = "expression",
+    minprop = 0.20
+  )
+
+  tibble::tibble(
+    Gene = gene_name,
+    optimal_cutpoint = as.numeric(
+      cutpoint_object$cutpoint[
+        "expression",
+        "cutpoint"
+      ]
+    ),
+    cutpoint_statistic = as.numeric(
+      cutpoint_object$cutpoint[
+        "expression",
+        "statistic"
+      ]
+    )
+  )
+}
+
+optimal_cutpoints <- survival_expr_long %>%
+  dplyr::group_by(Gene) %>%
+  tidyr::nest() %>%
+  dplyr::mutate(
+    cutpoint_results = purrr::map(
+      data,
+      get_optimal_cutpoint
+    )
+  ) %>%
+  dplyr::select(-data) %>%
+  tidyr::unnest(cutpoint_results)
+
+optimal_cutpoints
+```
+```{r}
+survival_expr_optimal <- survival_expr_long %>%
+  dplyr::left_join(
+    optimal_cutpoints,
+    by = "Gene"
+  ) %>%
+  dplyr::mutate(
+    Expression_Group = dplyr::if_else(
+      expression > optimal_cutpoint,
+      "High",
+      "Low"
+    ),
+    Expression_Group = factor(
+      Expression_Group,
+      levels = c("Low", "High")
+    )
+  )
+
+# Check cutpoints and group sizes
+survival_expr_optimal %>%
+  dplyr::count(
+    Gene,
+    Expression_Group
+  )
+
+optimal_cutpoints
+```
+```{r}
+out_dir_optimal <- paste0(
+  "/Data/Outputs/Manuscript/",
+  "rGBM_Survival_Optimal_Cutpoint"
+)
+
+if (!dir.exists(out_dir_optimal)) {
+  dir.create(
+    out_dir_optimal,
+    recursive = TRUE
+  )
+}
+
+km_plots_optimal <- list()
+
+for (gene_i in genes_survival) {
+
+  gene_data <- survival_expr_optimal %>%
+    dplyr::filter(Gene == gene_i)
+
+  cutoff_i <- unique(gene_data$optimal_cutpoint)
+
+  km_fit <- survival::survfit(
+    survival::Surv(
+      OS_years,
+      OS_event
+    ) ~ Expression_Group,
+    data = gene_data
+  )
+
+  km_plot <- survminer::ggsurvplot(
+    fit = km_fit,
+    data = gene_data,
+    risk.table = TRUE,
+    pval = TRUE,
+    conf.int = FALSE,
+    censor = TRUE,
+    palette = c(
+      "steelblue",
+      "firebrick"
+    ),
+    legend.title = gene_i,
+    legend.labs = c(
+      "Low",
+      "High"
+    ),
+    xlab = "Overall survival (years)",
+    ylab = "Overall survival probability",
+    title = paste0(
+      gene_i,
+      " expression and overall survival"
+    ),
+    subtitle = paste0(
+      "Recurrent GBM only | Optimal cutpoint = ",
+      round(cutoff_i, 2)
+    ),
+    break.time.by = 1,
+    risk.table.height = 0.25,
+    ggtheme = theme_bw(base_size = 11)
+  )
+
+  km_plot$plot <- km_plot$plot +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "top"
+    )
+
+  km_plot$table <- km_plot$table +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+
+  km_plots_optimal[[gene_i]] <- km_plot
+
+  pdf(
+    file = file.path(
+      out_dir_optimal,
+      paste0(
+        gene_i,
+        "_rGBM_KM_OptimalCutpoint.pdf"
+      )
+    ),
+    width = 6,
+    height = 6,
+    useDingbats = FALSE
+  )
+
+  print(km_plot)
+
+  dev.off()
+}
+```
+
+now only primary GBM
+
+```{r}
+###############################################################
+## Survival Analysis of Top rGBM-Upregulated Genes
+## Primary GBM Samples Only
+###############################################################
+
+
+# Genes identified among the top upregulated genes in rGBM vs GBM
+genes_survival_gbm <- c(
+  "COL1A1",
+  "COL1A2",
+  "CHI3L1",
+  "IGHG1",
+  "IGKC",
+  "COL3A1",
+  "FCGR2B",
+  "SERPINE1"
+)
+
+# Confirm all genes are present
+missing_genes_gbm <- setdiff(
+  genes_survival_gbm,
+  rownames(expr_adj_all)
+)
+
+if (length(missing_genes_gbm) > 0) {
+  stop(
+    "Missing genes: ",
+    paste(missing_genes_gbm, collapse = ", ")
+  )
+}
+```
+```{r}
+# Keep only primary GBM samples with complete survival data
+survival_meta_gbm <- sample_meta_all %>%
+  dplyr::filter(
+    group == "GBM",
+    !is.na(OS_days),
+    !is.na(OS_event),
+    OS_days > 0,
+    OS_event %in% c(0, 1)
+  ) %>%
+  dplyr::mutate(
+    cohort = factor(cohort),
+    OS_years = OS_days / 365.25
+  )
+
+# Sample counts
+table(survival_meta_gbm$cohort)
+table(survival_meta_gbm$OS_event)
+
+nrow(survival_meta_gbm)
+```
+```{r}
+survival_expr_gbm <- expr_adj_all[
+  genes_survival_gbm,
+  survival_meta_gbm$sample_id,
+  drop = FALSE
+] %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Gene") %>%
+  tidyr::pivot_longer(
+    cols = -Gene,
+    names_to = "sample_id",
+    values_to = "expression"
+  ) %>%
+  dplyr::left_join(
+    survival_meta_gbm,
+    by = "sample_id"
+  )
+
+# Confirm expected number of samples per gene
+survival_expr_gbm %>%
+  dplyr::count(Gene)
+```
+```{r}
+# Separate median cutoff for each gene
+survival_expr_gbm <- survival_expr_gbm %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::mutate(
+    median_expression = median(
+      expression,
+      na.rm = TRUE
+    ),
+    Expression_Group = ifelse(
+      expression >= median_expression,
+      "High",
+      "Low"
+    ),
+    Expression_Group = factor(
+      Expression_Group,
+      levels = c("Low", "High")
+    )
+  ) %>%
+  dplyr::ungroup()
+
+# Check high/low sample counts
+survival_expr_gbm %>%
+  dplyr::count(
+    Gene,
+    Expression_Group
+  )
+```
+```{r}
+out_dir_gbm <- "/Data/Outputs/Manuscript/Primary_GBM_Gene_Survival"
+
+if (!dir.exists(out_dir_gbm)) {
+  dir.create(
+    out_dir_gbm,
+    recursive = TRUE
+  )
+}
+
+km_plots_gbm <- list()
+
+for (gene_i in genes_survival_gbm) {
+
+  gene_data_gbm <- survival_expr_gbm %>%
+    dplyr::filter(Gene == gene_i)
+
+  km_fit_gbm <- survival::survfit(
+    survival::Surv(
+      OS_years,
+      OS_event
+    ) ~ Expression_Group,
+    data = gene_data_gbm
+  )
+
+  km_plot_gbm <- survminer::ggsurvplot(
+    fit = km_fit_gbm,
+    data = gene_data_gbm,
+    risk.table = TRUE,
+    pval = TRUE,
+    conf.int = FALSE,
+    censor = TRUE,
+    palette = c(
+      "steelblue",
+      "firebrick"
+    ),
+    legend.title = gene_i,
+    legend.labs = c(
+      "Low",
+      "High"
+    ),
+    xlab = "Overall survival (years)",
+    ylab = "Overall survival probability",
+    title = paste0(
+      gene_i,
+      " expression and overall survival"
+    ),
+    subtitle = "Primary GBM only | Median expression split",
+    break.time.by = 1,
+    risk.table.height = 0.25,
+    ggtheme = theme_bw(base_size = 11)
+  )
+
+  km_plot_gbm$plot <- km_plot_gbm$plot +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "top"
+    )
+
+  km_plot_gbm$table <- km_plot_gbm$table +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    )
+
+  km_plots_gbm[[gene_i]] <- km_plot_gbm
+
+  pdf(
+    file = file.path(
+      out_dir_gbm,
+      paste0(
+        gene_i,
+        "_Primary_GBM_KM_MedianSplit.pdf"
+      )
+    ),
+    width = 6,
+    height = 6,
+    useDingbats = FALSE
+  )
+
+  print(km_plot_gbm)
+
+  dev.off()
+}
+```
 
 ```{r}
 # ============================================================
