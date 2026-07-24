@@ -1165,10 +1165,33 @@ gene_df <- expr_adj_all[genes_of_interest, , drop = FALSE] %>%
     group = factor(group, levels = c("Control", "GBM", "rGBM"))
   )
 
-collagen_boxplot_clean <- ggplot(gene_df, aes(x = group, y = expr, fill = group)) +
-  geom_boxplot(outlier.shape = NA, width = 0.6, alpha = 0.75) +
-  geom_jitter(width = 0.15, size = 0.9, alpha = 0.45) +
-  facet_wrap(~ Gene, scales = "free_y") +
+collagen_boxplot_clean <- ggplot(
+  gene_df,
+  aes(x = group, y = expr, fill = group)
+) +
+  geom_boxplot(
+    outlier.shape = NA,
+    width = 0.6,
+    alpha = 0.75
+  ) +
+  geom_jitter(
+    width = 0.15,
+    size = 0.9,
+    alpha = 0.45
+  ) +
+  facet_wrap(
+  ~ Gene,
+  scales = "fixed",
+  axes = "all_y",
+  axis.labels = "all_y"
+) +
+  scale_y_continuous(
+    breaks = c(0,7,14),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  coord_cartesian(
+    ylim = c(0, 14)
+  ) +
   scale_fill_manual(
     values = c(
       "Control" = "grey70",
@@ -1176,16 +1199,18 @@ collagen_boxplot_clean <- ggplot(gene_df, aes(x = group, y = expr, fill = group)
       "rGBM" = "#d62728"
     )
   ) +
-  labs(
+   labs(
     title = "COL1A1, COL1A2, and COL3A1 expression",
     subtitle = "Batch-adjusted log2(FPKM + 1)",
     x = "",
     y = "Expression"
   ) +
-  theme_bw(base_size = 11) +
+  theme_classic(base_size = 11) +
   theme(
-    panel.grid.major = element_blank(),
-    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
     legend.position = "none"
   )
 
