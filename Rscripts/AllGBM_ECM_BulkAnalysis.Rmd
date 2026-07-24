@@ -3841,3 +3841,1232 @@ for (ct in cell_types) {
 }
 ```
 
+## GSE121810
+
+```{r}
+input_dir <- "/Data/Inputs/GSE121810"
+
+stopifnot(dir.exists(input_dir))
+
+list.files(
+  input_dir,
+  full.names = TRUE
+)
+```
+
+
+```{r}
+excel_file <- list.files(
+  input_dir,
+  pattern = "\\.xlsx$",
+  full.names = TRUE
+)
+
+ncbi_counts_file <- list.files(
+  input_dir,
+  pattern = "raw_counts.*\\.tsv(\\.gz)?$",
+  full.names = TRUE
+)
+
+annotation_file <- list.files(
+  input_dir,
+  pattern = "annot.*\\.tsv(\\.gz)?$",
+  full.names = TRUE
+)
+
+series_matrix_file <- list.files(
+  input_dir,
+  pattern = "series_matrix.*\\.txt(\\.gz)?$",
+  full.names = TRUE
+)
+
+excel_file
+ncbi_counts_file
+annotation_file
+series_matrix_file
+```
+
+```{r}
+list.files(input_dir)
+```
+
+```{r}
+input_dir <- "/Data/Inputs/GSE121810"
+
+excel_file <- file.path(
+  input_dir,
+  "GSE121810_Prins.PD1NeoAdjv.Jul2018.HUGO.PtID.xlsx"
+)
+
+ncbi_counts_file <- file.path(
+  input_dir,
+  "GSE121810_raw_counts_GRCh38.p13_NCBI.tsv"
+)
+
+series_matrix_file <- file.path(
+  input_dir,
+  "GSE121810_series_matrix.txt"
+)
+
+annotation_file <- file.path(
+  input_dir,
+  "Human.GRCh38.p13.annot.tsv"
+)
+
+stopifnot(
+  file.exists(excel_file),
+  file.exists(ncbi_counts_file),
+  file.exists(series_matrix_file),
+  file.exists(annotation_file)
+)
+```
+
+```{r}
+# List workbook sheets
+excel_sheets(excel_file)
+
+# Read the first sheet
+submitter_raw <- read_excel(
+  excel_file,
+  sheet = 1
+)
+
+# Inspect structure
+dim(submitter_raw)
+names(submitter_raw)
+head(submitter_raw)
+```
+
+```{r}
+ncbi_counts_raw <- read.delim(
+  ncbi_counts_file,
+  header = TRUE,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+dim(ncbi_counts_raw)
+names(ncbi_counts_raw)[1:min(10, ncol(ncbi_counts_raw))]
+
+head(
+  ncbi_counts_raw[, 1:min(6, ncol(ncbi_counts_raw))]
+)
+```
+
+```{r}
+sapply(
+  ncbi_counts_raw[, 1:min(6, ncol(ncbi_counts_raw))],
+  class
+)
+```
+
+```{r}
+gene_annotation <- read.delim(
+  annotation_file,
+  header = TRUE,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+dim(gene_annotation)
+names(gene_annotation)
+head(gene_annotation)
+```
+```{r}
+series_lines <- readLines(
+  series_matrix_file,
+  warn = FALSE
+)
+
+sample_metadata_lines <- series_lines[
+  grepl("^!Sample_", series_lines)
+]
+
+# Show the types of sample metadata contained in the file
+unique(
+  sub("\t.*$", "", sample_metadata_lines)
+)
+```
+```{r}
+treatment_lines <- sample_metadata_lines[
+  grepl(
+    "therapy|treatment|neoadjuvant|adjuvant",
+    sample_metadata_lines,
+    ignore.case = TRUE
+  )
+]
+
+cat(treatment_lines, sep = "\n")
+```
+
+```{r}
+excel_sheets(excel_file)
+
+dim(submitter_raw)
+names(submitter_raw)
+head(submitter_raw)
+
+dim(ncbi_counts_raw)
+names(ncbi_counts_raw)[1:10]
+
+names(gene_annotation)
+
+cat(treatment_lines, sep = "\n")
+```
+```{r}
+sample_columns <- setdiff(
+  names(submitter_raw),
+  "Genes"
+)
+
+# Confirm all expression columns were imported as numeric
+all_numeric <- all(
+  vapply(
+    submitter_raw[sample_columns],
+    is.numeric,
+    logical(1)
+  )
+)
+
+# Confirm values are nonnegative and integer-like
+integer_like <- all(
+  vapply(
+    submitter_raw[sample_columns],
+    function(x) {
+      all(
+        is.na(x) |
+          (
+            x >= 0 &
+              abs(x - round(x)) < 1e-8
+          )
+      )
+    },
+    logical(1)
+  )
+)
+
+cat("All expression columns numeric:", all_numeric, "\n")
+cat("All values nonnegative and integer-like:", integer_like, "\n")
+cat("Total missing expression values:",
+    sum(is.na(submitter_raw[sample_columns])),
+    "\n")
+```
+
+```{r}
+cat("Missing gene names:",
+    sum(is.na(submitter_raw$Genes)),
+    "\n")
+
+cat("Blank gene names:",
+    sum(trimws(submitter_raw$Genes) == "", na.rm = TRUE),
+    "\n")
+
+cat("Duplicated gene names:",
+    sum(duplicated(submitter_raw$Genes)),
+    "\n")
+```
+
+```{r}
+series_lines <- readLines(
+  series_matrix_file,
+  warn = FALSE
+)
+
+extract_sample_field <- function(field_name) {
+
+  target_lines <- series_lines[
+    startsWith(
+      series_lines,
+      paste0(field_name, "\t")
+    )
+  ]
+
+  if (length(target_lines) != 1) {
+    stop(
+      "Expected exactly one line for ",
+      field_name,
+      " but found ",
+      length(target_lines)
+    )
+  }
+
+  values <- strsplit(
+    target_lines,
+    split = "\t",
+    fixed = TRUE
+  )[[1]][-1]
+
+  # Remove surrounding quotation marks
+  sub(
+    '^"(.*)"$',
+    "\\1",
+    values
+  )
+}
+```
+
+```{r}
+sample_titles <- extract_sample_field(
+  "!Sample_title"
+)
+
+gsm_accessions <- extract_sample_field(
+  "!Sample_geo_accession"
+)
+
+therapy_raw <- extract_sample_field(
+  "!Sample_characteristics_ch1"
+)
+```
+
+```{r}
+metadata_geo <- tibble(
+  Sample = sample_titles,
+  GSM = gsm_accessions,
+  Therapy_raw = therapy_raw
+) %>%
+  mutate(
+    Treatment = case_when(
+      grepl(
+        "neoadjuvant",
+        Therapy_raw,
+        ignore.case = TRUE
+      ) ~ "Neoadjuvant",
+
+      grepl(
+        "adjuvant",
+        Therapy_raw,
+        ignore.case = TRUE
+      ) ~ "Adjuvant",
+
+      TRUE ~ NA_character_
+    )
+  )
+
+metadata_geo
+```
+```{r}
+table(
+  metadata_geo$Treatment,
+  useNA = "ifany"
+)
+```
+
+```{r}
+excel_samples <- names(submitter_raw)[-1]
+
+cat(
+  "Number of Excel samples:",
+  length(excel_samples),
+  "\n"
+)
+
+cat(
+  "Number of metadata samples:",
+  nrow(metadata_geo),
+  "\n"
+)
+
+cat(
+  "All Excel samples found in metadata:",
+  all(excel_samples %in% metadata_geo$Sample),
+  "\n"
+)
+```
+
+```{r}
+setdiff(
+  excel_samples,
+  metadata_geo$Sample
+)
+
+setdiff(
+  metadata_geo$Sample,
+  excel_samples
+)
+```
+```{r}
+identical(
+  excel_samples,
+  metadata_geo$Sample
+)
+```
+
+```{r}
+# Extract patient numbers from the Excel sample names
+excel_metadata <- tibble(
+  ExcelSample = excel_samples,
+  Patient = as.integer(str_extract(excel_samples, "\\d+")),
+  Suffix = str_extract(excel_samples, "[AB]$")
+)
+
+# Extract patient numbers from the GEO metadata
+metadata_geo <- metadata_geo %>%
+  mutate(
+    Patient = as.integer(str_extract(Sample, "\\d+"))
+  )
+
+# Join the GEO treatment information to the Excel samples
+metadata <- excel_metadata %>%
+  left_join(
+    metadata_geo,
+    by = "Patient"
+  )
+```
+
+```{r}
+cat("Number of rows:", nrow(metadata), "\n")
+cat("Missing treatment labels:", sum(is.na(metadata$Treatment)), "\n")
+cat("Missing GSM accessions:", sum(is.na(metadata$GSM)), "\n")
+
+table(metadata$Treatment)
+table(metadata$Suffix, metadata$Treatment)
+
+identical(metadata$ExcelSample, excel_samples)
+```
+
+```{r}
+# Clean gene names and combine any duplicated gene symbols
+submitter_clean <- submitter_raw %>%
+  mutate(
+    Genes = trimws(as.character(Genes))
+  ) %>%
+  filter(
+    !is.na(Genes),
+    Genes != ""
+  ) %>%
+  group_by(Genes) %>%
+  summarise(
+    across(
+      all_of(sample_columns),
+      ~ sum(.x, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  )
+```
+
+```{r}
+count_matrix <- submitter_clean %>%
+  column_to_rownames("Genes") %>%
+  as.matrix()
+
+storage.mode(count_matrix) <- "numeric"
+```
+
+```{r}
+metadata <- metadata %>%
+  arrange(
+    match(ExcelSample, colnames(count_matrix))
+  ) %>%
+  as.data.frame()
+
+metadata$Treatment <- factor(
+  metadata$Treatment,
+  levels = c("Adjuvant", "Neoadjuvant")
+)
+
+rownames(metadata) <- metadata$ExcelSample
+```
+
+```{r}
+stopifnot(
+  identical(
+    colnames(count_matrix),
+    rownames(metadata)
+  ),
+  !anyNA(metadata$Treatment),
+  !anyNA(count_matrix),
+  all(count_matrix >= 0),
+  all(count_matrix == round(count_matrix))
+)
+
+dim(count_matrix)
+table(metadata$Treatment)
+
+count_matrix[1:5, 1:5]
+metadata %>%
+  dplyr::select(ExcelSample, Patient, GSM, Treatment) %>%
+  head()
+```
+
+```{r}
+metadata <- as.data.frame(metadata)
+rownames(metadata) <- metadata$ExcelSample
+
+stopifnot(
+  identical(colnames(count_matrix), rownames(metadata))
+)
+```
+
+```{r}
+output_dir <- "/Data/Outputs/Manuscript/GSE121810"
+
+dir.create(
+  output_dir,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+stopifnot(dir.exists(output_dir))
+
+output_dir
+```
+
+```{r}
+library_sizes <- colSums(count_matrix)
+
+library_qc <- data.frame(
+  Sample = names(library_sizes),
+  LibrarySize = as.numeric(library_sizes),
+  LibrarySizeMillions = as.numeric(library_sizes) / 1e6,
+  Treatment = metadata[names(library_sizes), "Treatment"]
+)
+
+library_qc
+summary(library_qc$LibrarySizeMillions)
+```
+
+```{r}
+library_size_plot <- ggplot(
+  library_qc,
+  aes(
+    x = reorder(Sample, LibrarySizeMillions),
+    y = LibrarySizeMillions,
+    fill = Treatment
+  )
+) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "GSE121810 RNA-seq library sizes",
+    x = NULL,
+    y = "Library size (millions of reads)"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "top"
+  )
+
+library_size_plot
+```
+
+```{r}
+ggsave(
+  filename = file.path(
+    output_dir,
+    "GSE121810_library_sizes.png"
+  ),
+  plot = library_size_plot,
+  width = 8,
+  height = 7,
+  dpi = 300
+)
+```
+
+```{r}
+cpm_matrix <- sweep(
+  count_matrix,
+  MARGIN = 2,
+  STATS = library_sizes,
+  FUN = "/"
+) * 1e6
+```
+
+```{r}
+dim(cpm_matrix)
+summary(as.vector(cpm_matrix))
+```
+
+```{r}
+minimum_samples <- min(table(metadata$Treatment))
+
+minimum_samples
+```
+
+```{r}
+keep_genes <- rowSums(cpm_matrix >= 1) >= minimum_samples
+
+table(keep_genes)
+```
+
+```{r}
+count_matrix_filtered <- count_matrix[
+  keep_genes,
+  ,
+  drop = FALSE
+]
+```
+
+```{r}
+cat(
+  "Genes before filtering:",
+  nrow(count_matrix),
+  "\n"
+)
+
+cat(
+  "Genes after filtering:",
+  nrow(count_matrix_filtered),
+  "\n"
+)
+
+cat(
+  "Genes removed:",
+  sum(!keep_genes),
+  "\n"
+)
+
+cat(
+  "Percent retained:",
+  round(
+    100 * nrow(count_matrix_filtered) / nrow(count_matrix),
+    1
+  ),
+  "%\n"
+)
+```
+
+```{r}
+genes_of_interest <- c(
+  "TGFB1",
+  "TGFB2",
+  "TGFB3",
+  "TGFBR1",
+  "TGFBR2",
+  "SMAD2",
+  "SMAD3",
+  "SMAD4",
+  "SMAD7",
+  "SERPINE1",
+  "TGFBI",
+  "THBS1",
+  "COL1A1",
+  "COL1A2",
+  "COL3A1"
+)
+
+data.frame(
+  Gene = genes_of_interest,
+  PresentBeforeFiltering =
+    genes_of_interest %in% rownames(count_matrix),
+  PresentAfterFiltering =
+    genes_of_interest %in% rownames(count_matrix_filtered)
+)
+```
+
+```{r}
+write.csv(
+  count_matrix_filtered,
+  file = file.path(
+    output_dir,
+    "GSE121810_filtered_raw_counts.csv"
+  ),
+  quote = FALSE
+)
+
+write.csv(
+  metadata,
+  file = file.path(
+    output_dir,
+    "GSE121810_sample_metadata.csv"
+  ),
+  row.names = FALSE
+)
+```
+
+```{r}
+qc_dir <- file.path(output_dir, "QC")
+deg_dir <- file.path(output_dir, "DEG")
+gsea_dir <- file.path(output_dir, "GSEA")
+
+dir.create(qc_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(deg_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(gsea_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+stopifnot(
+  identical(colnames(count_matrix_filtered), rownames(metadata)),
+  all(metadata$Treatment %in% c("Adjuvant", "Neoadjuvant"))
+)
+
+table(metadata$Treatment)
+```
+
+```{r}
+metadata$Treatment <- factor(
+  metadata$Treatment,
+  levels = c("Adjuvant", "Neoadjuvant")
+)
+
+design <- model.matrix(
+  ~ 0 + Treatment,
+  data = metadata
+)
+
+colnames(design) <- sub(
+  "^Treatment",
+  "",
+  colnames(design)
+)
+
+rownames(design) <- rownames(metadata)
+
+design
+```
+```{r}
+v <- voomWithQualityWeights(
+  count_matrix_filtered,
+  design = design,
+  normalize.method = "none",
+  plot = TRUE
+)
+```
+```{r}
+sample_weights <- setNames(
+  v$targets$sample.weights,
+  colnames(count_matrix_filtered)
+)
+
+sort(sample_weights)
+```
+```{r}
+sample_weight_df <- data.frame(
+  Sample = names(sample_weights),
+  Treatment = metadata[names(sample_weights), "Treatment"],
+  SampleWeight = as.numeric(sample_weights)
+)
+
+sample_weight_df <- sample_weight_df[
+  order(sample_weight_df$SampleWeight),
+  ,
+  drop = FALSE
+]
+
+sample_weight_df
+```
+```{r}
+write.csv(
+  sample_weight_df,
+  file = file.path(
+    qc_dir,
+    "GSE121810_voom_sample_quality_weights.csv"
+  ),
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+
+```{r}
+dim(v$E)
+range(v$E)
+
+pca <- prcomp(
+  t(v$E),
+  center = TRUE,
+  scale. = FALSE
+)
+```
+
+```{r}
+
+percent_variance <- 100 * (
+  pca$sdev^2 / sum(pca$sdev^2)
+)
+
+pca_df <- data.frame(
+  Sample = rownames(pca$x),
+  PC1 = pca$x[, 1],
+  PC2 = pca$x[, 2],
+  Treatment = metadata[rownames(pca$x), "Treatment"]
+)
+```
+
+```{r}
+pca_plot <- ggplot(
+  pca_df,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Treatment,
+    label = Sample
+  )
+) +
+  geom_point(size = 4) +
+  ggrepel::geom_text_repel(
+    size = 3,
+    max.overlaps = Inf
+  ) +
+  labs(
+    title = "GSE121810: PCA of voom-normalized quality weighted expression",
+    x = paste0(
+      "PC1 (",
+      round(percent_variance[1], 1),
+      "%)"
+    ),
+    y = paste0(
+      "PC2 (",
+      round(percent_variance[2], 1),
+      "%)"
+    )
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "top"
+  )
+
+pca_plot
+
+```
+```{r}
+ggsave(
+  filename = file.path(
+    qc_dir,
+    "GSE121810_PCA_voom_quality_weighted_expression.png"
+  ),
+  plot = pca_plot,
+  width = 8,
+  height = 6.5,
+  dpi = 300
+)
+```
+
+
+
+```{r}
+sample_cor <- cor(
+  v$E,
+  method = "pearson"
+)
+
+annotation_samples <- data.frame(
+  Treatment = metadata[colnames(v$E), "Treatment"]
+)
+
+rownames(annotation_samples) <- colnames(v$E)
+
+pheatmap(
+  sample_cor,
+  annotation_col = annotation_samples,
+  annotation_row = annotation_samples,
+  show_colnames = TRUE,
+  show_rownames = TRUE,
+  fontsize = 7,
+  filename = file.path(
+    qc_dir,
+    "GSE121810_sample_correlation_heatmap.png"
+  ),
+  width = 10,
+  height = 9
+)
+```
+
+```{r}
+saveRDS(
+  v,
+  file = file.path(
+    qc_dir,
+    "GSE121810_voom_object.rds"
+  )
+)
+
+write.csv(
+  v$E,
+  file = file.path(
+    qc_dir,
+    "GSE121810_voom_logCPM.csv"
+  ),
+  quote = FALSE
+)
+```
+
+```{r}
+fit <- lmFit(
+  v,
+  design
+)
+
+contrast_matrix <- makeContrasts(
+  Neoadjuvant_vs_Adjuvant = Neoadjuvant - Adjuvant,
+  levels = design
+)
+
+contrast_matrix
+```
+
+```{r}
+fit2 <- contrasts.fit(
+  fit,
+  contrast_matrix
+)
+
+fit2 <- eBayes(
+  fit2,
+  robust = TRUE
+)
+```
+
+```{r}
+de_results <- topTable(
+  fit2,
+  coef = "Neoadjuvant_vs_Adjuvant",
+  number = Inf,
+  adjust.method = "BH",
+  sort.by = "P"
+)
+
+de_results$Gene <- rownames(de_results)
+
+de_results <- de_results[
+  ,
+  c(
+    "Gene",
+    setdiff(names(de_results), "Gene")
+  )
+]
+
+dim(de_results)
+head(de_results)
+```
+
+```{r}
+de_results$Significance <- "Not significant"
+
+de_results$Significance[
+  de_results$adj.P.Val < 0.05 &
+    de_results$logFC >= 0.5
+] <- "Higher_Neoadjuvant"
+
+de_results$Significance[
+  de_results$adj.P.Val < 0.05 &
+    de_results$logFC <= -0.5
+] <- "Higher_Adjuvant"
+
+de_results$Significance <- factor(
+  de_results$Significance,
+  levels = c(
+    "Higher_Adjuvant",
+    "Not significant",
+    "Higher_Neoadjuvant"
+  )
+)
+
+table(de_results$Significance)
+```
+```{r}
+summary(
+  decideTests(
+    fit2,
+    p.value = 0.05,
+    lfc = 0.5
+  )
+)
+```
+
+```{r}
+tgfb_ecm_genes <- c(
+  "TGFB1",
+  "TGFB2",
+  "TGFB3",
+  "TGFBR1",
+  "TGFBR2",
+  "TGFBR3",
+  "SMAD2",
+  "SMAD3",
+  "SMAD4",
+  "SMAD7",
+  "SERPINE1",
+  "TGFBI",
+  "THBS1",
+  "CTGF",
+  "PMEPA1",
+  "LTBP1",
+  "LTBP2",
+  "COL1A1",
+  "COL1A2",
+  "COL3A1",
+  "FN1",
+  "POSTN",
+  "FAP",
+  "LOX",
+  "LOXL2"
+)
+
+tgfb_ecm_results <- de_results[
+  de_results$Gene %in% tgfb_ecm_genes,
+  ,
+  drop = FALSE
+]
+
+tgfb_ecm_results <- tgfb_ecm_results[
+  order(
+    tgfb_ecm_results$logFC,
+    decreasing = TRUE
+  ),
+]
+
+tgfb_ecm_results
+```
+```{r}
+write.csv(
+  de_results,
+  file = file.path(
+    deg_dir,
+    "GSE121810_limma_Neoadjuvant_vs_Adjuvant_all_genes.csv"
+  ),
+  row.names = FALSE,
+  quote = FALSE
+)
+
+write.csv(
+  tgfb_ecm_results,
+  file = file.path(
+    deg_dir,
+    "GSE121810_TGFB_ECM_gene_results.csv"
+  ),
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+```{r}
+# Lowest adjusted P value
+min(de_results$adj.P.Val, na.rm = TRUE)
+
+# Numbers passing different thresholds
+sum(de_results$P.Value < 0.05, na.rm = TRUE)
+sum(de_results$adj.P.Val < 0.05, na.rm = TRUE)
+sum(abs(de_results$logFC) >= 0.5, na.rm = TRUE)
+
+# Raw P < 0.05 plus effect-size threshold
+sum(
+  de_results$P.Value < 0.05 &
+    abs(de_results$logFC) >= 0.5,
+  na.rm = TRUE
+)
+
+head(
+  de_results[
+    order(de_results$P.Value),
+    c("Gene", "logFC", "AveExpr", "t", "P.Value", "adj.P.Val")
+  ],
+  20
+)
+```
+```{r}
+tgfb_genes <- c(
+  "TGFB1", "TGFB2", "TGFB3",
+  "TGFBR1", "TGFBR2", "TGFBR3",
+  "SMAD2", "SMAD3", "SMAD4", "SMAD7",
+  "SERPINE1", "PMEPA1", "TGFBI",
+  "THBS1", "LTBP1", "LTBP2",
+  "CTGF", "CCN2",
+  "COL1A1", "COL1A2", "COL3A1",
+  "FN1", "POSTN", "FAP",
+  "LOX", "LOXL2"
+)
+
+tgfb_present <- intersect(
+  tgfb_genes,
+  rownames(v$E)
+)
+
+tgfb_missing <- setdiff(
+  tgfb_genes,
+  rownames(v$E)
+)
+
+cat("Genes present:", length(tgfb_present), "\n")
+cat("Genes missing:", paste(tgfb_missing, collapse = ", "), "\n")
+```
+
+```{r}
+tgfb_heatmap_matrix <- v$E[
+  tgfb_present,
+  ,
+  drop = FALSE
+]
+```
+
+```{r}
+sample_order <- order(
+  metadata[colnames(tgfb_heatmap_matrix), "Treatment"]
+)
+
+tgfb_heatmap_matrix <- tgfb_heatmap_matrix[
+  ,
+  sample_order,
+  drop = FALSE
+]
+
+metadata_heatmap <- metadata[
+  colnames(tgfb_heatmap_matrix),
+  ,
+  drop = FALSE
+]
+
+annotation_heatmap <- data.frame(
+  Treatment = metadata_heatmap$Treatment
+)
+
+rownames(annotation_heatmap) <- rownames(metadata_heatmap)
+```
+
+```{r}
+pheatmap(
+  tgfb_heatmap_matrix,
+  scale = "row",
+  cluster_rows = TRUE,
+  cluster_cols = FALSE,
+  annotation_col = annotation_heatmap,
+  gaps_col = sum(metadata_heatmap$Treatment == "Adjuvant"),
+  show_colnames = TRUE,
+  show_rownames = TRUE,
+  fontsize_col = 7,
+  fontsize_row = 9,
+  angle_col = 45,
+  border_color = NA,
+  main = "TGF-beta and ECM-associated gene expression",
+  filename = file.path(
+    deg_dir,
+    "GSE121810_TGFB_ECM_heatmap.png"
+  ),
+  width = 11,
+  height = 8
+)
+```
+
+
+```{r}
+gene_ranks <- de_results$t
+names(gene_ranks) <- de_results$Gene
+
+# Remove missing or non-finite values
+gene_ranks <- gene_ranks[
+  is.finite(gene_ranks) &
+    !is.na(names(gene_ranks)) &
+    names(gene_ranks) != ""
+]
+
+# Retain one value per gene symbol
+gene_ranks <- gene_ranks[
+  !duplicated(names(gene_ranks))
+]
+
+# GSEA requires decreasing order
+gene_ranks <- sort(
+  gene_ranks,
+  decreasing = TRUE
+)
+
+length(gene_ranks)
+head(gene_ranks)
+tail(gene_ranks)
+
+stopifnot(
+  all(diff(gene_ranks) <= 0)
+)
+```
+
+```{r}
+set.seed(123)
+
+gsea_go_bp <- gseGO(
+  geneList = gene_ranks,
+  OrgDb = org.Hs.eg.db,
+  keyType = "SYMBOL",
+  ont = "BP",
+  minGSSize = 15,
+  maxGSSize = 500,
+  pvalueCutoff = 1,
+  pAdjustMethod = "BH",
+  eps = 0,
+  verbose = FALSE
+)
+```
+
+
+```{r}
+gsea_go_results <- as.data.frame(
+  gsea_go_bp
+)
+
+dim(gsea_go_results)
+names(gsea_go_results)
+
+gsea_go_results <- gsea_go_results %>%
+  filter(
+    is.finite(NES),
+    !is.na(p.adjust)
+  ) %>%
+  mutate(
+    Direction = ifelse(
+      NES > 0,
+      "Higher in Neoadjuvant",
+      "Higher in Adjuvant"
+    )
+  ) %>%
+  arrange(
+    p.adjust,
+    pvalue
+  )
+
+head(gsea_go_results)
+```
+
+```{r}
+gsea_top20 <- gsea_go_results %>%
+  slice_head(n = 20)
+
+gsea_top20 %>%
+  dplyr::select(
+    ID,
+    Description,
+    setSize,
+    NES,
+    pvalue,
+    p.adjust,
+    Direction
+  )
+```
+
+```{r}
+gsea_tgfb <- gsea_go_results %>%
+  filter(
+    grepl(
+      "transforming growth factor|TGF|SMAD",
+      Description,
+      ignore.case = TRUE
+    )
+  ) %>%
+  arrange(
+    p.adjust,
+    desc(NES)
+  )
+
+gsea_tgfb %>%
+  dplyr::select(
+    ID,
+    Description,
+    setSize,
+    NES,
+    pvalue,
+    p.adjust,
+    core_enrichment,
+    Direction
+  )
+```
+
+```{r}
+write.csv(
+  gsea_tgfb,
+  file = file.path(
+    gsea_dir,
+    "GSE121810_GSEA_GO_BP_QW_TGFB_results.csv"
+  ),
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
