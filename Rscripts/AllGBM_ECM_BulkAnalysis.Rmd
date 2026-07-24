@@ -2575,22 +2575,379 @@ if (!dir.exists(out_dir)) {
 }
 
 km_plot_list <- list()
+survival_stats_list <- list()
+
+
+# ============================================================
+# Helper function to extract Cox regression results
+# ============================================================
+
+extract_cox_stats <- function(
+  cox_model,
+  term = "Expression_GroupHigh"
+) {
+
+  empty_result <- tibble::tibble(
+    HR = NA_real_,
+    HR_lower_95CI = NA_real_,
+    HR_upper_95CI = NA_real_,
+    Cox_p = NA_real_
+  )
+
+  if (is.null(cox_model)) {
+    return(empty_result)
+  }
+
+  cox_summary <- summary(cox_model)
+
+  if (!term %in% rownames(cox_summary$coefficients)) {
+    return(empty_result)
+  }
+
+  tibble::tibble(
+    HR = unname(
+      cox_summary$coefficients[
+        term,
+        "exp(coef)"
+      ]
+    ),
+
+    HR_lower_95CI = unname(
+      cox_summary$conf.int[
+        term,
+        "lower .95"
+      ]
+    ),
+
+    HR_upper_95CI = unname(
+      cox_summary$conf.int[
+        term,
+        "upper .95"
+      ]
+    ),
+
+    Cox_p = unname(
+      cox_summary$coefficients[
+        term,
+        "Pr(>|z|)"
+      ]
+    )
+  )
+}
+
+
+# ============================================================
+# Run survival analysis for each gene
+# ============================================================
 
 for (gene_i in genes_survival) {
 
   gene_data <- survival_expr_long %>%
-    dplyr::filter(Gene == gene_i)
+    dplyr::filter(
+      Gene == gene_i,
+      !is.na(expression),
+      !is.na(Expression_Group),
+      !is.na(OS_years),
+      !is.na(OS_event)
+    ) %>%
+    droplevels()
+
+
+  # ----------------------------------------------------------
+  # Kaplan-Meier model
+  # ----------------------------------------------------------
 
   km_fit <- survival::survfit(
-    survival::Surv(OS_years, OS_event) ~ Expression_Group,
+    survival::Surv(OS_years, OS_event) ~
+      Expression_Group,
     data = gene_data
   )
+
+
+  # ----------------------------------------------------------
+  # Sample sizes, events, and censored observations
+  # ----------------------------------------------------------
+
+  low_n <- sum(
+    gene_data$Expression_Group == "Low"
+  )
+
+  high_n <- sum(
+    gene_data$Expression_Group == "High"
+  )
+
+  low_events <- sum(
+    gene_data$OS_event[
+      gene_data$Expression_Group == "Low"
+    ] == 1,
+    na.rm = TRUE
+  )
+
+  high_events <- sum(
+    gene_data$OS_event[
+      gene_data$Expression_Group == "High"
+    ] == 1,
+    na.rm = TRUE
+  )
+
+  low_censored <- low_n - low_events
+  high_censored <- high_n - high_events
+
+
+  # ----------------------------------------------------------
+  # Median overall survival and 95% confidence intervals
+  # ----------------------------------------------------------
+
+  median_survival_table <- survminer::surv_median(
+    km_fit
+  ) %>%
+    dplyr::mutate(
+      Expression_Group = sub(
+        "^Expression_Group=",
+        "",
+        strata
+      )
+    )
+
+  get_median_stat <- function(
+    group_name,
+    column_name
+  ) {
+
+    value <- median_survival_table[
+      median_survival_table$Expression_Group ==
+        group_name,
+      column_name,
+      drop = TRUE
+    ]
+
+    if (length(value) == 0) {
+      return(NA_real_)
+    }
+
+    as.numeric(value[1])
+  }
+
+  low_median_OS <- get_median_stat(
+    "Low",
+    "median"
+  )
+
+  low_median_OS_lower <- get_median_stat(
+    "Low",
+    "lower"
+  )
+
+  low_median_OS_upper <- get_median_stat(
+    "Low",
+    "upper"
+  )
+
+  high_median_OS <- get_median_stat(
+    "High",
+    "median"
+  )
+
+  high_median_OS_lower <- get_median_stat(
+    "High",
+    "lower"
+  )
+
+  high_median_OS_upper <- get_median_stat(
+    "High",
+    "upper"
+  )
+
+
+  # ----------------------------------------------------------
+  # Log-rank test
+  # ----------------------------------------------------------
+
+  logrank_fit <- survival::survdiff(
+    survival::Surv(OS_years, OS_event) ~
+      Expression_Group,
+    data = gene_data
+  )
+
+  logrank_chisq <- unname(
+    logrank_fit$chisq
+  )
+
+  logrank_df <- length(
+    logrank_fit$n
+  ) - 1
+
+  logrank_p <- stats::pchisq(
+    logrank_chisq,
+    df = logrank_df,
+    lower.tail = FALSE
+  )
+
+
+  # ----------------------------------------------------------
+  # Unadjusted Cox proportional-hazards model
+  # High expression compared with Low expression
+  # ----------------------------------------------------------
+
+  cox_unadjusted <- tryCatch(
+    survival::coxph(
+      survival::Surv(OS_years, OS_event) ~
+        Expression_Group,
+      data = gene_data
+    ),
+    error = function(e) {
+      message(
+        "Unadjusted Cox model failed for ",
+        gene_i,
+        ": ",
+        e$message
+      )
+
+      NULL
+    }
+  )
+
+  unadjusted_stats <- extract_cox_stats(
+    cox_unadjusted
+  )
+
+
+  # ----------------------------------------------------------
+  # Adjusted Cox proportional-hazards model
+  # Adjusted for GBM/rGBM status and cohort
+  # ----------------------------------------------------------
+
+  cox_adjusted <- tryCatch(
+    survival::coxph(
+      survival::Surv(OS_years, OS_event) ~
+        Expression_Group +
+        group +
+        cohort,
+      data = gene_data
+    ),
+    error = function(e) {
+      message(
+        "Adjusted Cox model failed for ",
+        gene_i,
+        ": ",
+        e$message
+      )
+
+      NULL
+    }
+  )
+
+  adjusted_stats <- extract_cox_stats(
+    cox_adjusted
+  )
+
+
+  # ----------------------------------------------------------
+  # Save statistics for this gene
+  # ----------------------------------------------------------
+
+  survival_stats_list[[gene_i]] <- tibble::tibble(
+    Gene = gene_i,
+
+    Analysis_population =
+      "GBM and rGBM tumor samples",
+
+    Expression_group_definition =
+      "High >= median; Low < median",
+
+    HR_comparison =
+      "High expression versus Low expression",
+
+    Adjusted_model_covariates =
+      "GBM/rGBM status and cohort",
+
+    Median_expression_cutoff = median(
+      gene_data$expression,
+      na.rm = TRUE
+    ),
+
+    Total_n = nrow(gene_data),
+
+    Total_events = sum(
+      gene_data$OS_event == 1,
+      na.rm = TRUE
+    ),
+
+    Total_censored = sum(
+      gene_data$OS_event == 0,
+      na.rm = TRUE
+    ),
+
+    Low_n = low_n,
+    Low_events = low_events,
+    Low_censored = low_censored,
+
+    High_n = high_n,
+    High_events = high_events,
+    High_censored = high_censored,
+
+    Low_median_OS_years =
+      low_median_OS,
+
+    Low_median_OS_lower_95CI =
+      low_median_OS_lower,
+
+    Low_median_OS_upper_95CI =
+      low_median_OS_upper,
+
+    High_median_OS_years =
+      high_median_OS,
+
+    High_median_OS_lower_95CI =
+      high_median_OS_lower,
+
+    High_median_OS_upper_95CI =
+      high_median_OS_upper,
+
+    Log_rank_chisq =
+      logrank_chisq,
+
+    Log_rank_df =
+      logrank_df,
+
+    Log_rank_p =
+      logrank_p,
+
+    Unadjusted_HR =
+      unadjusted_stats$HR,
+
+    Unadjusted_HR_lower_95CI =
+      unadjusted_stats$HR_lower_95CI,
+
+    Unadjusted_HR_upper_95CI =
+      unadjusted_stats$HR_upper_95CI,
+
+    Unadjusted_Cox_p =
+      unadjusted_stats$Cox_p,
+
+    Adjusted_HR =
+      adjusted_stats$HR,
+
+    Adjusted_HR_lower_95CI =
+      adjusted_stats$HR_lower_95CI,
+
+    Adjusted_HR_upper_95CI =
+      adjusted_stats$HR_upper_95CI,
+
+    Adjusted_Cox_p =
+      adjusted_stats$Cox_p
+  )
+
+
+  # ----------------------------------------------------------
+  # Kaplan-Meier plot
+  # ----------------------------------------------------------
 
   km_plot <- survminer::ggsurvplot(
     fit = km_fit,
     data = gene_data,
     risk.table = TRUE,
-    pval = TRUE,
+    pval = FALSE,
     conf.int = FALSE,
     censor = TRUE,
     palette = c("steelblue", "firebrick"),
@@ -2598,8 +2955,14 @@ for (gene_i in genes_survival) {
     legend.labs = c("Low", "High"),
     xlab = "Overall survival (years)",
     ylab = "Overall survival probability",
-    title = paste0(gene_i, " expression and overall survival"),
-    subtitle = "All tumor samples: GBM + rGBM | Median expression split",
+    title = paste0(
+      gene_i,
+      " expression and overall survival"
+    ),
+    subtitle = paste0(
+      "All tumor samples: GBM + rGBM | ",
+      "Median expression split"
+    ),
     break.time.by = 1,
     risk.table.height = 0.25,
     ggtheme = theme_bw(base_size = 11)
@@ -2620,11 +2983,18 @@ for (gene_i in genes_survival) {
 
   km_plot_list[[gene_i]] <- km_plot
 
+
+  # ----------------------------------------------------------
   # Save plot with risk table
+  # ----------------------------------------------------------
+
   pdf(
     file = file.path(
       out_dir,
-      paste0(gene_i, "_AllTumors_KM_MedianSplit.pdf")
+      paste0(
+        gene_i,
+        "_AllTumors_KM_MedianSplit.pdf"
+      )
     ),
     width = 6,
     height = 6,
@@ -2635,6 +3005,69 @@ for (gene_i in genes_survival) {
 
   dev.off()
 }
+
+
+# ============================================================
+# Combine statistics for all genes
+# ============================================================
+
+survival_stats_table <- dplyr::bind_rows(
+  survival_stats_list
+) %>%
+  dplyr::mutate(
+    Log_rank_FDR_BH = p.adjust(
+      Log_rank_p,
+      method = "BH"
+    ),
+
+    Unadjusted_Cox_FDR_BH = p.adjust(
+      Unadjusted_Cox_p,
+      method = "BH"
+    ),
+
+    Adjusted_Cox_FDR_BH = p.adjust(
+      Adjusted_Cox_p,
+      method = "BH"
+    ),
+
+    Gene = factor(
+      Gene,
+      levels = genes_survival
+    )
+  ) %>%
+  dplyr::arrange(Gene) %>%
+  dplyr::mutate(
+    Gene = as.character(Gene)
+  ) %>%
+  dplyr::relocate(
+    Log_rank_FDR_BH,
+    .after = Log_rank_p
+  ) %>%
+  dplyr::relocate(
+    Unadjusted_Cox_FDR_BH,
+    .after = Unadjusted_Cox_p
+  ) %>%
+  dplyr::relocate(
+    Adjusted_Cox_FDR_BH,
+    .after = Adjusted_Cox_p
+  )
+
+
+# ============================================================
+# Export statistics CSV
+# ============================================================
+
+readr::write_csv(
+  survival_stats_table,
+  file.path(
+    out_dir,
+    "AllTumors_Gene_Survival_Statistics.csv"
+  )
+)
+
+
+# View the completed statistics table
+survival_stats_table
 ```
 
 Lets repeat this anaysis but only for rGBm sampes. Since we already established that those previous genes are upregulated in rGBM the survival difference mayjust be because the statification measured suvival betweenn primary GBM and rGBM. 
