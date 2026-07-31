@@ -669,6 +669,178 @@ ggsave(
 
 ```
 ```{r}
+# ============================================================
+# Control vs All GBM volcano:
+# top 5 genes labeled in each direction by logFC
+# ============================================================
+
+stopifnot(exists("de_control_vs_gbm_all"))
+
+fdr_cutoff   <- 0.05
+logfc_cutoff <- 1
+top_n_each   <- 10
+
+# Prepare volcano data
+vol_df_top5 <- de_control_vs_gbm_all %>%
+  dplyr::mutate(
+    # Prevent infinite values if adjusted P-value equals zero
+    neglog10FDR = -log10(
+      pmax(adj.P.Val, .Machine$double.xmin)
+    ),
+
+    direction = dplyr::case_when(
+      adj.P.Val < fdr_cutoff & logFC >= logfc_cutoff  ~ "Up in All GBM",
+      adj.P.Val < fdr_cutoff & logFC <= -logfc_cutoff ~ "Up in Control",
+      TRUE                                             ~ "Not significant"
+    )
+  )
+
+# Select top five genes by logFC in each direction
+label_df_top5 <- dplyr::bind_rows(
+
+  # Five highest positive logFC genes
+  vol_df_top5 %>%
+    dplyr::filter(
+      direction == "Up in All GBM"
+    ) %>%
+    dplyr::arrange(dplyr::desc(logFC)) %>%
+    dplyr::slice_head(n = top_n_each),
+
+  # Five most negative logFC genes
+  vol_df_top5 %>%
+    dplyr::filter(
+      direction == "Up in Control"
+    ) %>%
+    dplyr::arrange(logFC) %>%
+    dplyr::slice_head(n = top_n_each)
+)
+
+# Print selected genes for reference
+label_df_top5 %>%
+  dplyr::select(
+    Gene_Name,
+    logFC,
+    adj.P.Val,
+    direction
+  ) %>%
+  dplyr::arrange(
+    direction,
+    dplyr::desc(abs(logFC))
+  ) %>%
+  print(n = Inf)
+
+# Create volcano plot
+ctrl_gbm_volcano_top5 <- ggplot(
+  vol_df_top5,
+  aes(x = logFC, y = neglog10FDR)
+) +
+
+  # Plot all genes
+  geom_point(
+    aes(color = direction),
+    alpha = 0.6,
+    size = 1.2
+  ) +
+
+  # Highlight labeled genes
+  geom_point(
+    data = label_df_top5,
+    aes(color = direction),
+    size = 2.8,
+    alpha = 1
+  ) +
+
+  # Add gene labels
+  ggrepel::geom_text_repel(
+    data = label_df_top5,
+    aes(label = Gene_Name),
+    size = 3.2,
+    fontface = "bold",
+    box.padding = 0.5,
+    point.padding = 0.3,
+    min.segment.length = 0,
+    segment.color = "grey40",
+    max.overlaps = Inf,
+    seed = 123
+  ) +
+
+  # FDR threshold
+  geom_hline(
+    yintercept = -log10(fdr_cutoff),
+    linetype = "dashed"
+  ) +
+
+  # logFC thresholds
+  geom_vline(
+    xintercept = c(-logfc_cutoff, logfc_cutoff),
+    linetype = "dotted"
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "Up in All GBM" = "firebrick",
+      "Up in Control" = "steelblue",
+      "Not significant" = "grey70"
+    )
+  ) +
+
+  labs(
+    title = "Control vs All GBM",
+    subtitle = paste0(
+      "Top 5 genes per direction ranked by logFC",
+      " | FDR < ", fdr_cutoff,
+      " | |logFC| ≥ ", logfc_cutoff
+    ),
+    x = "logFC (All GBM / Control)",
+    y = "-log10(FDR)",
+    color = ""
+  ) +
+
+  coord_cartesian(clip = "off") +
+
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "top",
+    plot.margin = margin(
+      t = 10,
+      r = 25,
+      b = 10,
+      l = 25
+    )
+  )
+
+print(ctrl_gbm_volcano_top5)
+
+# ============================================================
+# Save labeled volcano plot
+# ============================================================
+
+out_dir <- "/Data/Outputs/Manuscript"
+
+if (!dir.exists(out_dir)) {
+  dir.create(out_dir, recursive = TRUE)
+}
+
+ggsave(
+  filename = file.path(
+    out_dir,
+    "Control_vs_All_GBM_Volcano_Top10_LogFC.pdf"
+  ),
+  plot = ctrl_gbm_volcano_top5,
+  device = cairo_pdf,
+  width = 6,
+  height = 5,
+  units = "in",
+  dpi = 300
+)
+```
+
+
+
+
+```{r}
 # CHUNK 1: Sample setup for Control vs rGBM
 
 stopifnot(exists("expr_adj_all"), exists("sample_meta_all"))
@@ -1476,6 +1648,181 @@ ggsave(
 )
 ```
 
+```{r}
+# ============================================================
+# rGBM vs GBM volcano:
+# label top 10 genes in each direction by logFC
+# ============================================================
+
+stopifnot(exists("vol_rg"))
+
+top_n_each <- 10
+
+# Select top five genes increased in rGBM
+top_up_rgbm <- vol_rg %>%
+  dplyr::filter(direction == "Up in rGBM") %>%
+  dplyr::arrange(dplyr::desc(logFC)) %>%
+  dplyr::slice_head(n = top_n_each)
+
+# Select top five genes increased in primary GBM
+top_up_gbm <- vol_rg %>%
+  dplyr::filter(direction == "Up in GBM") %>%
+  dplyr::arrange(logFC) %>%
+  dplyr::slice_head(n = top_n_each)
+
+# Combine genes to label
+label_rg <- dplyr::bind_rows(
+  top_up_rgbm,
+  top_up_gbm
+)
+
+# Print selected genes for reference
+label_rg %>%
+  dplyr::select(
+    Gene_Name,
+    logFC,
+    adj.P.Val,
+    direction
+  ) %>%
+  dplyr::arrange(
+    direction,
+    dplyr::desc(abs(logFC))
+  ) %>%
+  print(n = Inf)
+
+# Create labeled volcano
+rgbm_volcano_labeled <- ggplot(
+  vol_rg,
+  aes(x = logFC, y = neglog10FDR)
+) +
+
+  # All genes
+  geom_point(
+    aes(color = direction),
+    alpha = 0.7,
+    size = 1.2
+  ) +
+
+  # Continue highlighting COL1A1 and COL3A1
+  geom_point(
+    data = vol_rg %>%
+      dplyr::filter(Gene_Name %in% c("COL1A1", "COL3A1")),
+    aes(color = direction),
+    size = 3.5,
+    alpha = 1
+  ) +
+
+  # Highlight the genes receiving labels
+  geom_point(
+    data = label_rg,
+    aes(color = direction),
+    size = 2.8,
+    alpha = 1
+  ) +
+
+  # Add gene labels
+  ggrepel::geom_text_repel(
+    data = label_rg,
+    aes(label = Gene_Name),
+    size = 3.2,
+    fontface = "bold",
+    box.padding = 0.5,
+    point.padding = 0.3,
+    min.segment.length = 0,
+    segment.color = "grey40",
+    max.overlaps = Inf,
+    seed = 123
+  ) +
+
+  # FDR threshold
+  geom_hline(
+    yintercept = -log10(fdr_cutoff),
+    linetype = "dashed"
+  ) +
+
+  # logFC thresholds
+  geom_vline(
+    xintercept = c(-logfc_cutoff, logfc_cutoff),
+    linetype = "dotted"
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "Up in rGBM" = "firebrick",
+      "Up in GBM" = "steelblue",
+      "Not significant" = "grey70"
+    )
+  ) +
+
+  labs(
+    title = "rGBM vs Primary GBM",
+    subtitle = paste0(
+      "Top 5 genes per direction ranked by logFC",
+      " | FDR < ", fdr_cutoff,
+      " | |logFC| ≥ ", logfc_cutoff
+    ),
+    x = "logFC (rGBM / GBM)",
+    y = "-log10(FDR)",
+    color = ""
+  ) +
+
+  coord_cartesian(clip = "off") +
+
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "top",
+    plot.margin = margin(
+      t = 10,
+      r = 25,
+      b = 10,
+      l = 25
+    )
+  )
+
+print(rgbm_volcano_labeled)
+
+# ============================================================
+# Save labeled volcano
+# ============================================================
+
+out_dir <- "/Data/Outputs/Manuscript"
+
+if (!dir.exists(out_dir)) {
+  dir.create(out_dir, recursive = TRUE)
+}
+
+ggsave(
+  filename = file.path(
+    out_dir,
+    "rGBM_vs_GBM_Volcano_Top5_LogFC_Labeled.pdf"
+  ),
+  plot = rgbm_volcano_labeled,
+  device = cairo_pdf,
+  width = 6,
+  height = 5,
+  units = "in",
+  dpi = 300
+)
+
+# Save labeled genes
+write.csv(
+  label_rg %>%
+    dplyr::select(
+      Gene_Name,
+      logFC,
+      P.Value,
+      adj.P.Val,
+      direction
+    ),
+  file = file.path(
+    out_dir,
+    "rGBM_vs_GBM_Volcano_Top10_Labeled_Genes.csv"
+  ),
+  row.names = FALSE
+)
+```
 
 ```{r}
 stopifnot(exists("de_rgbm_vs_gbm"))
