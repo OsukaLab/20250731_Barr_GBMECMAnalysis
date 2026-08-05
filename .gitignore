@@ -15,3 +15,11 @@ Inputs/visiumSeuratObj.rds
 Inputs/GLASS/transcript_count_matrix_all_samples.tsv
 Inputs/GLASS/transcript_eff_length_matrix_all_samples.tsv
 Inputs/GLASS/variants.anno.csv
+Inputs/UCSC/matrix.mtx
+Inputs/UCSC/barcodes.tsv
+Inputs/UCSC/features.tsv
+Inputs/UCSC/filter_matrix.py
+Inputs/UCSC/filtered_100_genes.mtx
+Inputs/UCSC/genes_of_interest.txt
+Inputs/UCSC/meta.tsv
+Inputs/UCSC/filtered_100_genes_features.tsv

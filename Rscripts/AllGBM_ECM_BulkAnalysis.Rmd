@@ -4646,6 +4646,2629 @@ for (ct in cell_types) {
 }
 ```
 
+### USCS targeted gene analysis
+
+```{r}
+# ============================================================
+# UCSC spatial targeted-gene analysis
+# ============================================================
+
+ucsc_dir <- "/Data/Inputs/UCSC"
+
+matrix_path   <- file.path(ucsc_dir, "filtered_100_genes.mtx")
+features_path <- file.path(ucsc_dir, "filtered_100_genes_features.tsv")
+barcodes_path <- file.path(ucsc_dir, "barcodes.tsv")
+meta_path     <- file.path(ucsc_dir, "meta.tsv")
+
+stopifnot(
+  file.exists(matrix_path),
+  file.exists(features_path),
+  file.exists(barcodes_path),
+  file.exists(meta_path)
+)
+
+cat("All required files were found.\n")
+```
+
+```{r}
+# -----------------------------
+# Load filtered expression matrix
+# -----------------------------
+expr_selected <- Matrix::readMM(matrix_path)
+
+genes <- readLines(features_path)
+barcodes <- readLines(barcodes_path)
+
+rownames(expr_selected) <- genes
+colnames(expr_selected) <- barcodes
+
+# Basic checks
+dim(expr_selected)
+length(genes)
+length(barcodes)
+
+stopifnot(
+  nrow(expr_selected) == 100,
+  ncol(expr_selected) == 115914,
+  length(genes) == 100,
+  length(barcodes) == 115914
+)
+
+cat("Filtered matrix loaded correctly.\n")
+```
+
+```{r}
+# -----------------------------
+# Load dot-level metadata
+# -----------------------------
+dot_meta <- data.table::fread(
+  meta_path,
+  sep = "\t",
+  header = TRUE,
+  data.table = FALSE,
+  check.names = FALSE
+)
+
+dim(dot_meta)
+names(dot_meta)[1:10]
+head(dot_meta[[1]])
+```
+```{r}
+names(dot_meta)[1] <- "barcode"
+
+stopifnot(
+  nrow(dot_meta) == ncol(expr_selected),
+  identical(dot_meta$barcode, colnames(expr_selected))
+)
+
+cat("Metadata and expression matrix are perfectly aligned.\n")
+```
+```{r}
+# -----------------------------
+# Inspect sample composition
+# -----------------------------
+length(unique(dot_meta$sample))
+
+sort(table(dot_meta$sample), decreasing = TRUE)
+
+table(
+  Diagnosis = dot_meta$Diagnosis,
+  useNA = "ifany"
+)
+
+table(
+  Histology = dot_meta$short_histology,
+  useNA = "ifany"
+)
+```
+
+```{r}
+# -----------------------------
+# Subset to GBM samples only
+# -----------------------------
+gbm_keep <- dot_meta$short_histology == "GBM"
+
+dot_meta_gbm <- dot_meta[gbm_keep, , drop = FALSE]
+
+expr_gbm <- expr_selected[, gbm_keep, drop = FALSE]
+
+# Verify alignment
+stopifnot(
+  nrow(dot_meta_gbm) == ncol(expr_gbm),
+  identical(dot_meta_gbm$barcode, colnames(expr_gbm)),
+  all(dot_meta_gbm$short_histology == "GBM")
+)
+
+dim(expr_gbm)
+length(unique(dot_meta_gbm$sample))
+
+cat("GBM subset created and aligned correctly.\n")
+```
+
+```{r}
+# ============================================================
+# Step 1: Extract collagen-gene expression from GBM dots
+# ============================================================
+
+collagen_genes <- c("COL1A1", "COL1A2", "COL3A1")
+
+stopifnot(
+  all(collagen_genes %in% rownames(expr_gbm)),
+  ncol(expr_gbm) == nrow(dot_meta_gbm),
+  identical(colnames(expr_gbm), dot_meta_gbm$barcode)
+)
+
+# Safe to convert only these 3 genes to a dense matrix
+collagen_expr <- t(
+  as.matrix(
+    expr_gbm[collagen_genes, , drop = FALSE]
+  )
+)
+
+# Create one row per GBM dot
+collagen_df <- data.frame(
+  barcode = dot_meta_gbm$barcode,
+  sample = dot_meta_gbm$sample,
+  COL1A1 = collagen_expr[, "COL1A1"],
+  COL1A2 = collagen_expr[, "COL1A2"],
+  COL3A1 = collagen_expr[, "COL3A1"],
+  stringsAsFactors = FALSE
+)
+
+# Confirm dot-level alignment
+stopifnot(
+  nrow(collagen_df) == 100488,
+  identical(collagen_df$barcode, dot_meta_gbm$barcode)
+)
+
+cat("Collagen-expression table created correctly.\n")
+dim(collagen_df)
+```
+
+```{r}
+# Expression-value summaries
+summary(
+  collagen_df[, collagen_genes]
+)
+
+# Percentage of GBM dots with nonzero expression
+collagen_detection <- data.frame(
+  Gene = collagen_genes,
+  Dots_detected = sapply(
+    collagen_df[, collagen_genes],
+    function(x) sum(x > 0)
+  ),
+  Percent_detected = sapply(
+    collagen_df[, collagen_genes],
+    function(x) mean(x > 0) * 100
+  )
+)
+
+collagen_detection
+```
+```{r}
+# ============================================================
+# Step 2: Calculate global collagen score across all GBM dots
+# ============================================================
+
+# Number of collagen genes detected in each dot
+collagen_df$n_collagen_detected <- rowSums(
+  collagen_df[, collagen_genes, drop = FALSE] > 0
+)
+
+# Globally standardize each collagen gene across all GBM dots
+collagen_z <- scale(
+  collagen_df[, collagen_genes, drop = FALSE],
+  center = TRUE,
+  scale = TRUE
+)
+
+colnames(collagen_z) <- paste0(collagen_genes, "_z")
+
+# Mean standardized expression of COL1A1, COL1A2, and COL3A1
+collagen_df$collagen_score <- rowMeans(collagen_z)
+
+# Add individual z-scores for reference
+collagen_df <- cbind(
+  collagen_df,
+  as.data.frame(collagen_z)
+)
+
+# Quality checks
+stopifnot(
+  nrow(collagen_df) == nrow(dot_meta_gbm),
+  !anyNA(collagen_df$collagen_score)
+)
+
+cat("Global collagen score calculated successfully.\n")
+```
+
+```{r}
+# Number of dots expressing 0, 1, 2, or 3 collagen genes
+table(collagen_df$n_collagen_detected)
+
+# Percentage in each detection category
+round(
+  prop.table(table(collagen_df$n_collagen_detected)) * 100,
+  2
+)
+
+# Distribution of the global collagen score
+summary(collagen_df$collagen_score)
+
+# Confirm the score is centered near zero
+mean(collagen_df$collagen_score)
+sd(collagen_df$collagen_score)
+```
+```{r}
+# ============================================================
+# Step 3: Assign global collagen-high and collagen-low groups
+# ============================================================
+
+global_collagen_cutoff <- median(
+  collagen_df$collagen_score,
+  na.rm = TRUE
+)
+
+collagen_df$collagen_group <- ifelse(
+  collagen_df$collagen_score > global_collagen_cutoff,
+  "COL_High",
+  "COL_Low"
+)
+
+collagen_df$collagen_group <- factor(
+  collagen_df$collagen_group,
+  levels = c("COL_Low", "COL_High")
+)
+
+cat("Global collagen-score cutoff:", global_collagen_cutoff, "\n")
+
+table(collagen_df$collagen_group)
+
+round(
+  prop.table(table(collagen_df$collagen_group)) * 100,
+  2
+)
+```
+```{r}
+# ============================================================
+# Step 4: Add collagen classification to GBM metadata
+# ============================================================
+
+dot_meta_gbm$collagen_score <- collagen_df$collagen_score
+dot_meta_gbm$n_collagen_detected <- collagen_df$n_collagen_detected
+dot_meta_gbm$collagen_group <- collagen_df$collagen_group
+
+stopifnot(
+  identical(dot_meta_gbm$barcode, collagen_df$barcode),
+  !anyNA(dot_meta_gbm$collagen_group)
+)
+
+cat("Collagen classifications added to GBM metadata.\n")
+```
+```{r}
+library(dplyr)
+
+collagen_sample_summary <- dot_meta_gbm %>%
+  group_by(sample) %>%
+  summarise(
+    total_dots = n(),
+    COL_Low_dots = sum(collagen_group == "COL_Low"),
+    COL_High_dots = sum(collagen_group == "COL_High"),
+    percent_COL_High = 100 * COL_High_dots / total_dots,
+    median_collagen_score = median(collagen_score),
+    mean_collagen_score = mean(collagen_score),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(percent_COL_High))
+
+collagen_sample_summary
+```
+```{r}
+# ============================================================
+# Step 5: Create dot-level expression table for all selected genes
+# ============================================================
+
+gene_expr_gbm <- as.data.frame(
+  t(as.matrix(expr_gbm)),
+  check.names = FALSE
+)
+
+gene_expr_gbm$barcode <- dot_meta_gbm$barcode
+gene_expr_gbm$sample <- dot_meta_gbm$sample
+gene_expr_gbm$collagen_score <- dot_meta_gbm$collagen_score
+gene_expr_gbm$collagen_group <- dot_meta_gbm$collagen_group
+
+# Put identifiers first
+gene_expr_gbm <- gene_expr_gbm %>%
+  dplyr::select(
+    barcode,
+    sample,
+    collagen_group,
+    collagen_score,
+    dplyr::everything()
+  )
+
+stopifnot(
+  nrow(gene_expr_gbm) == 100488,
+  identical(gene_expr_gbm$barcode, dot_meta_gbm$barcode),
+  !anyNA(gene_expr_gbm$collagen_group)
+)
+
+dim(gene_expr_gbm)
+head(gene_expr_gbm[, 1:8])
+```
+
+
+
+```{r}
+# ============================================================
+# Blocked heatmap:
+# All COL_Low samples together, all COL_High samples together
+#
+# Samples lacking one collagen category are retained.
+# Gray tiles indicate that the sample had no dots assigned
+# to that collagen category.
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+heatmap_out_dir <- file.path(
+  out_dir,
+  "Heatmaps"
+)
+
+if (!dir.exists(heatmap_out_dir)) {
+  dir.create(
+    heatmap_out_dir,
+    recursive = TRUE
+  )
+}
+
+# ------------------------------------------------------------
+# Set plotting order
+# ------------------------------------------------------------
+sample_order <- sort(
+  unique(gene_expression_long$sample)
+)
+
+collagen_group_order <- c(
+  "COL_Low",
+  "COL_High"
+)
+
+# ------------------------------------------------------------
+# Check which samples lack COL_Low or COL_High dots
+# ------------------------------------------------------------
+sample_group_availability <- gene_expression_long %>%
+  dplyr::distinct(
+    sample,
+    collagen_group
+  ) %>%
+  dplyr::mutate(
+    collagen_group = as.character(collagen_group)
+  ) %>%
+  tidyr::complete(
+    sample = sample_order,
+    collagen_group = collagen_group_order
+  ) %>%
+  dplyr::mutate(
+    group_present = !is.na(sample)
+  )
+
+# More direct count table
+sample_group_counts <- gene_expression_long %>%
+  dplyr::distinct(
+    barcode,
+    sample,
+    collagen_group
+  ) %>%
+  dplyr::count(
+    sample,
+    collagen_group,
+    name = "n_dots"
+  ) %>%
+  dplyr::mutate(
+    collagen_group = as.character(collagen_group)
+  ) %>%
+  tidyr::complete(
+    sample = sample_order,
+    collagen_group = collagen_group_order,
+    fill = list(
+      n_dots = 0
+    )
+  ) %>%
+  dplyr::arrange(
+    sample,
+    factor(
+      collagen_group,
+      levels = collagen_group_order
+    )
+  )
+
+# Display samples missing one collagen category
+sample_group_counts %>%
+  dplyr::filter(n_dots == 0)
+
+
+# ------------------------------------------------------------
+# Calculate mean gene expression within each sample and
+# collagen category
+#
+# All available dots are included, including dots with
+# zero target-gene expression.
+# ------------------------------------------------------------
+gene_sample_summary <- gene_expression_long %>%
+  dplyr::mutate(
+    Gene = as.character(Gene),
+    collagen_group = as.character(collagen_group)
+  ) %>%
+  dplyr::group_by(
+    Gene,
+    sample,
+    collagen_group
+  ) %>%
+  dplyr::summarise(
+    n_dots = dplyr::n(),
+
+    mean_expression = mean(
+      Expression,
+      na.rm = TRUE
+    ),
+
+    percent_detected = 100 * mean(
+      Expression > 0,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+
+# ------------------------------------------------------------
+# Add missing Gene × Sample × Collagen-group combinations
+#
+# Missing categories receive:
+#   n_dots = 0
+#   expression = NA
+#
+# NA is different from zero expression.
+# ------------------------------------------------------------
+gene_sample_summary_complete <- gene_sample_summary %>%
+  tidyr::complete(
+    Gene = genes_to_plot,
+    sample = sample_order,
+    collagen_group = collagen_group_order,
+    fill = list(
+      n_dots = 0,
+      mean_expression = NA_real_,
+      percent_detected = NA_real_
+    )
+  )
+
+# Confirm that every gene/sample now has two rows
+group_check <- gene_sample_summary_complete %>%
+  dplyr::count(
+    Gene,
+    sample,
+    name = "n_groups"
+  )
+
+stopifnot(
+  all(group_check$n_groups == 2)
+)
+
+
+# ------------------------------------------------------------
+# Calculate gene-wise z-scores using only available values
+#
+# Missing sample-category combinations remain NA.
+# ------------------------------------------------------------
+gene_sample_heatmap <- gene_sample_summary_complete %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::mutate(
+    gene_mean = mean(
+      mean_expression,
+      na.rm = TRUE
+    ),
+
+    gene_sd = stats::sd(
+      mean_expression,
+      na.rm = TRUE
+    ),
+
+    mean_expression_z = dplyr::case_when(
+      is.na(mean_expression) ~ NA_real_,
+
+      is.na(gene_sd) ~ 0,
+
+      gene_sd == 0 ~ 0,
+
+      TRUE ~ (
+        mean_expression - gene_mean
+      ) / gene_sd
+    )
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    sample = factor(
+      sample,
+      levels = sample_order
+    ),
+
+    collagen_group = factor(
+      collagen_group,
+      levels = collagen_group_order
+    ),
+
+    Gene = factor(
+      Gene,
+      levels = rev(genes_to_plot)
+    )
+  )
+
+
+# ------------------------------------------------------------
+# Create blocked heatmap
+# ------------------------------------------------------------
+p_gene_heatmap_blocked <- ggplot(
+  gene_sample_heatmap,
+  aes(
+    x = sample,
+    y = Gene,
+    fill = mean_expression_z
+  )
+) +
+  geom_tile(
+    color = "white",
+    linewidth = 0.4
+  ) +
+
+  facet_grid(
+    cols = vars(collagen_group),
+    scales = "free_x",
+    space = "free_x",
+    drop = FALSE
+  ) +
+
+  scale_x_discrete(
+    drop = FALSE
+  ) +
+
+  scale_fill_gradient2(
+    low = "steelblue",
+    mid = "white",
+    high = "firebrick",
+    midpoint = 0,
+    limits = c(-2, 2),
+    oob = scales::squish,
+
+    # Gray means that sample had no dots in that category
+    na.value = "grey75",
+
+    name = "Relative mean\nexpression"
+  ) +
+
+  labs(
+    title = "Gene expression in collagen-low and collagen-high GBM regions",
+    subtitle = paste0(
+      "Mean expression across all available spatial dots; ",
+      "gray indicates no dots in that sample category"
+    ),
+    x = NULL,
+    y = NULL
+  ) +
+
+  theme_classic(base_size = 11) +
+
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      vjust = 0.5,
+      size = 7
+    ),
+
+    axis.text.y = element_text(
+      face = "italic",
+      size = 10
+    ),
+
+    strip.background = element_rect(
+      fill = "grey92",
+      color = "black",
+      linewidth = 0.7
+    ),
+
+    strip.text = element_text(
+      face = "bold",
+      size = 11
+    ),
+
+    panel.spacing.x = grid::unit(
+      0.35,
+      "cm"
+    ),
+
+    legend.position = "right",
+
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+
+    plot.subtitle = element_text(
+      hjust = 0.5,
+      size = 9
+    )
+  )
+
+print(p_gene_heatmap_blocked)
+
+
+# ------------------------------------------------------------
+# Save blocked heatmap
+# ------------------------------------------------------------
+ggsave(
+  filename = file.path(
+    heatmap_out_dir,
+    "GeneExpression_COLLow_COLHigh_Blocked_Heatmap.pdf"
+  ),
+  plot = p_gene_heatmap_blocked,
+  device = cairo_pdf,
+  width = 9,
+  height = 3.5,
+  units = "in"
+)
+
+
+# ------------------------------------------------------------
+# Save underlying values
+# ------------------------------------------------------------
+write.csv(
+  gene_sample_heatmap,
+  file = file.path(
+    heatmap_out_dir,
+    "GeneExpression_COLLow_COLHigh_Blocked_Heatmap_Data.csv"
+  ),
+  row.names = FALSE
+)
+
+write.csv(
+  sample_group_counts,
+  file = file.path(
+    heatmap_out_dir,
+    "Sample_CollagenGroup_Dot_Counts.csv"
+  ),
+  row.names = FALSE
+)
+```
+```{r}
+# ============================================================
+# Sample-level paired analysis:
+# Mean gene expression in COL_Low vs COL_High regions
+#
+# Experimental unit = individual GBM tumor
+#
+# All available dots contribute to each sample-level mean,
+# including dots with zero target-gene expression.
+#
+# Samples missing COL_Low or COL_High remain in the output,
+# but cannot contribute to the paired statistical test.
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+analysis_out_dir <- file.path(
+  out_dir,
+  "Sample_Level_Analysis"
+)
+
+if (!dir.exists(analysis_out_dir)) {
+  dir.create(
+    analysis_out_dir,
+    recursive = TRUE
+  )
+}
+
+sample_order <- sort(
+  unique(gene_expression_long$sample)
+)
+
+collagen_group_order <- c(
+  "COL_Low",
+  "COL_High"
+)
+
+# ------------------------------------------------------------
+# Step 1: Calculate one mean per:
+# Gene × Sample × Collagen group
+# ------------------------------------------------------------
+gene_sample_means_long <- gene_expression_long %>%
+  dplyr::mutate(
+    Gene = as.character(Gene),
+    collagen_group = as.character(collagen_group)
+  ) %>%
+  dplyr::group_by(
+    Gene,
+    sample,
+    collagen_group
+  ) %>%
+  dplyr::summarise(
+    n_dots = dplyr::n(),
+
+    # Mean includes zero-expression dots
+    mean_expression = mean(
+      Expression,
+      na.rm = TRUE
+    ),
+
+    percent_detected = 100 * mean(
+      Expression > 0,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  ) %>%
+
+  # Retain missing sample/group combinations as NA
+  tidyr::complete(
+    Gene = genes_to_plot,
+    sample = sample_order,
+    collagen_group = collagen_group_order,
+    fill = list(
+      n_dots = 0,
+      mean_expression = NA_real_,
+      percent_detected = NA_real_
+    )
+  )
+
+# ------------------------------------------------------------
+# Step 2: Put COL_Low and COL_High side by side
+# ------------------------------------------------------------
+gene_sample_pairs <- gene_sample_means_long %>%
+  tidyr::pivot_wider(
+    names_from = collagen_group,
+    values_from = c(
+      n_dots,
+      mean_expression,
+      percent_detected
+    ),
+    names_sep = "__"
+  ) %>%
+  dplyr::mutate(
+    has_pair =
+      !is.na(mean_expression__COL_Low) &
+      !is.na(mean_expression__COL_High),
+
+    mean_difference = dplyr::if_else(
+      has_pair,
+      mean_expression__COL_High -
+        mean_expression__COL_Low,
+      NA_real_
+    )
+  )
+
+# Inspect samples that cannot contribute to paired testing
+gene_sample_pairs %>%
+  dplyr::filter(!has_pair) %>%
+  dplyr::select(
+    Gene,
+    sample,
+    n_dots__COL_Low,
+    n_dots__COL_High
+  )
+
+
+# ------------------------------------------------------------
+# Step 3: Safe paired Wilcoxon-test function
+# ------------------------------------------------------------
+paired_wilcox_p <- function(low, high) {
+
+  keep <- stats::complete.cases(
+    low,
+    high
+  )
+
+  low <- low[keep]
+  high <- high[keep]
+
+  if (length(low) < 2) {
+    return(NA_real_)
+  }
+
+  differences <- high - low
+
+  # If every paired difference is zero
+  if (all(differences == 0)) {
+    return(1)
+  }
+
+  suppressWarnings(
+    stats::wilcox.test(
+      x = high,
+      y = low,
+      paired = TRUE,
+      exact = FALSE
+    )$p.value
+  )
+}
+
+
+# ------------------------------------------------------------
+# Step 4: Run paired analysis for each selected gene
+# ------------------------------------------------------------
+gene_paired_statistics <- gene_sample_pairs %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(
+    n_total_samples = dplyr::n(),
+
+    n_paired_samples = sum(
+      has_pair
+    ),
+
+    mean_COL_Low = mean(
+      mean_expression__COL_Low[has_pair],
+      na.rm = TRUE
+    ),
+
+    mean_COL_High = mean(
+      mean_expression__COL_High[has_pair],
+      na.rm = TRUE
+    ),
+
+    mean_difference = mean(
+      mean_difference[has_pair],
+      na.rm = TRUE
+    ),
+
+    median_difference = median(
+      mean_difference[has_pair],
+      na.rm = TRUE
+    ),
+
+    tumors_higher_in_COL_High = sum(
+      mean_difference > 0,
+      na.rm = TRUE
+    ),
+
+    tumors_higher_in_COL_Low = sum(
+      mean_difference < 0,
+      na.rm = TRUE
+    ),
+
+    tumors_with_no_difference = sum(
+      mean_difference == 0,
+      na.rm = TRUE
+    ),
+
+    p_value = paired_wilcox_p(
+      mean_expression__COL_Low,
+      mean_expression__COL_High
+    ),
+
+    .groups = "drop"
+  ) %>%
+
+  # Correct across the selected gene panel
+  dplyr::mutate(
+    FDR = stats::p.adjust(
+      p_value,
+      method = "BH"
+    )
+  ) %>%
+
+  dplyr::arrange(
+    FDR,
+    p_value
+  )
+
+gene_paired_statistics
+
+
+# ------------------------------------------------------------
+# Step 5: Save analysis tables
+# ------------------------------------------------------------
+write.csv(
+  gene_sample_means_long,
+  file = file.path(
+    analysis_out_dir,
+    "GeneExpression_SampleLevel_Means_Long.csv"
+  ),
+  row.names = FALSE
+)
+
+write.csv(
+  gene_sample_pairs,
+  file = file.path(
+    analysis_out_dir,
+    "GeneExpression_SampleLevel_Paired_Values.csv"
+  ),
+  row.names = FALSE
+)
+
+write.csv(
+  gene_paired_statistics,
+  file = file.path(
+    analysis_out_dir,
+    "GeneExpression_COLHigh_vs_COLLow_Paired_Statistics.csv"
+  ),
+  row.names = FALSE
+)
+```
+
+```{r}
+# ============================================================
+# Paired sample-level gene-expression plots
+#
+# Each point = mean expression within one GBM sample
+# Gray lines connect COL_Low and COL_High regions
+# from the same tumor.
+#
+# All dots, including zero-expression dots, contributed
+# to each sample-level mean.
+# ============================================================
+
+library(dplyr)
+library(ggplot2)
+
+plot_out_dir <- file.path(
+  analysis_out_dir,
+  "Paired_Plots"
+)
+
+if (!dir.exists(plot_out_dir)) {
+  dir.create(
+    plot_out_dir,
+    recursive = TRUE
+  )
+}
+
+# ------------------------------------------------------------
+# Prepare statistical labels
+# ------------------------------------------------------------
+gene_stat_labels <- gene_paired_statistics %>%
+  dplyr::mutate(
+    p_label = dplyr::case_when(
+      is.na(p_value) ~ "p = NA",
+      p_value < 0.001 ~ "p < 0.001",
+      TRUE ~ paste0(
+        "p = ",
+        formatC(
+          p_value,
+          format = "f",
+          digits = 3
+        )
+      )
+    ),
+
+    fdr_label = dplyr::case_when(
+      is.na(FDR) ~ "FDR = NA",
+      FDR < 0.001 ~ "FDR < 0.001",
+      TRUE ~ paste0(
+        "FDR = ",
+        formatC(
+          FDR,
+          format = "f",
+          digits = 3
+        )
+      )
+    ),
+
+    facet_label = paste0(
+      Gene,
+      "\n",
+      p_label,
+      "; ",
+      fdr_label,
+      "\npaired n = ",
+      n_paired_samples
+    )
+  ) %>%
+  dplyr::select(
+    Gene,
+    facet_label
+  )
+
+# ------------------------------------------------------------
+# Prepare sample-level plotting data
+# ------------------------------------------------------------
+gene_sample_plot_data <- gene_sample_means_long %>%
+  dplyr::mutate(
+    Gene = as.character(Gene),
+
+    collagen_group = factor(
+      collagen_group,
+      levels = c(
+        "COL_Low",
+        "COL_High"
+      )
+    )
+  ) %>%
+  dplyr::left_join(
+    gene_stat_labels,
+    by = "Gene"
+  )
+
+# ------------------------------------------------------------
+# Identify complete sample pairs for connecting lines
+# ------------------------------------------------------------
+paired_line_data <- gene_sample_plot_data %>%
+  dplyr::filter(
+    !is.na(mean_expression)
+  ) %>%
+  dplyr::group_by(
+    Gene,
+    sample
+  ) %>%
+  dplyr::filter(
+    dplyr::n_distinct(collagen_group) == 2
+  ) %>%
+  dplyr::ungroup()
+
+# Preserve requested gene order
+facet_order <- gene_stat_labels %>%
+  dplyr::filter(
+    Gene %in% genes_to_plot
+  ) %>%
+  dplyr::slice(
+    match(
+      genes_to_plot,
+      Gene
+    )
+  ) %>%
+  dplyr::pull(
+    facet_label
+  )
+
+gene_sample_plot_data$facet_label <- factor(
+  gene_sample_plot_data$facet_label,
+  levels = facet_order
+)
+
+paired_line_data$facet_label <- factor(
+  paired_line_data$facet_label,
+  levels = facet_order
+)
+
+# ============================================================
+# Combined faceted plot
+# ============================================================
+
+p_gene_paired <- ggplot(
+  gene_sample_plot_data,
+  aes(
+    x = collagen_group,
+    y = mean_expression
+  )
+) +
+
+  # Connect COL_Low and COL_High values from the same tumor
+  geom_line(
+    data = paired_line_data,
+    aes(
+      group = sample
+    ),
+    color = "grey65",
+    linewidth = 0.6,
+    alpha = 0.8
+  ) +
+
+  # One point per tumor and collagen category
+  geom_point(
+    aes(
+      color = collagen_group
+    ),
+    position = position_jitter(
+      width = 0.035,
+      height = 0,
+      seed = 123
+    ),
+    size = 2.3,
+    alpha = 0.9,
+    na.rm = TRUE
+  ) +
+
+  # Show the overall mean of the sample-level values
+  stat_summary(
+    aes(
+      group = collagen_group
+    ),
+    fun = mean,
+    geom = "point",
+    shape = 18,
+    size = 4,
+    color = "black",
+    na.rm = TRUE
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "COL_Low" = "steelblue",
+      "COL_High" = "firebrick"
+    )
+  ) +
+
+  facet_wrap(
+    ~ facet_label,
+    scales = "free_y",
+    nrow = 1
+  ) +
+
+  scale_y_continuous(
+    limits = c(0, NA),
+    expand = expansion(
+      mult = c(0, 0.08)
+    )
+  ) +
+
+  labs(
+    title = "Gene expression in collagen-low and collagen-high GBM regions",
+    subtitle = paste0(
+      "Each point represents one tumor; black diamonds show ",
+      "group means"
+    ),
+    x = NULL,
+    y = "Mean processed expression",
+    color = NULL
+  ) +
+
+  theme_classic(base_size = 11) +
+
+  theme(
+    legend.position = "top",
+
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      face = "bold"
+    ),
+
+    strip.background = element_blank(),
+
+    strip.text = element_text(
+      face = "bold",
+      size = 9
+    ),
+
+    panel.spacing.x = grid::unit(
+      0.4,
+      "cm"
+    ),
+
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+
+    plot.subtitle = element_text(
+      hjust = 0.5
+    )
+  )
+
+print(p_gene_paired)
+
+ggsave(
+  filename = file.path(
+    plot_out_dir,
+    "GeneExpression_COLLow_vs_COLHigh_Paired_AllGenes.pdf"
+  ),
+  plot = p_gene_paired,
+  device = cairo_pdf,
+  width = 12,
+  height = 4,
+  units = "in"
+)
+
+
+# ============================================================
+# Save one paired plot per gene
+# ============================================================
+
+for (gene_i in genes_to_plot) {
+
+  df_gene <- gene_sample_plot_data %>%
+    dplyr::filter(
+      Gene == gene_i
+    )
+
+  df_lines <- paired_line_data %>%
+    dplyr::filter(
+      Gene == gene_i
+    )
+
+  gene_stats_i <- gene_paired_statistics %>%
+    dplyr::filter(
+      Gene == gene_i
+    )
+
+  p_text <- dplyr::case_when(
+    is.na(gene_stats_i$p_value) ~ "Paired Wilcoxon p = NA",
+    gene_stats_i$p_value < 0.001 ~
+      "Paired Wilcoxon p < 0.001",
+    TRUE ~ paste0(
+      "Paired Wilcoxon p = ",
+      formatC(
+        gene_stats_i$p_value,
+        format = "f",
+        digits = 3
+      )
+    )
+  )
+
+  fdr_text <- dplyr::case_when(
+    is.na(gene_stats_i$FDR) ~ "FDR = NA",
+    gene_stats_i$FDR < 0.001 ~ "FDR < 0.001",
+    TRUE ~ paste0(
+      "FDR = ",
+      formatC(
+        gene_stats_i$FDR,
+        format = "f",
+        digits = 3
+      )
+    )
+  )
+
+  p_gene <- ggplot(
+    df_gene,
+    aes(
+      x = collagen_group,
+      y = mean_expression
+    )
+  ) +
+
+    geom_line(
+      data = df_lines,
+      aes(
+        group = sample
+      ),
+      color = "grey65",
+      linewidth = 0.7,
+      alpha = 0.8
+    ) +
+
+    geom_point(
+      aes(
+        color = collagen_group
+      ),
+      position = position_jitter(
+        width = 0.035,
+        height = 0,
+        seed = 123
+      ),
+      size = 2.5,
+      alpha = 0.9,
+      na.rm = TRUE
+    ) +
+
+    stat_summary(
+      aes(
+        group = collagen_group
+      ),
+      fun = mean,
+      geom = "point",
+      shape = 18,
+      size = 4.5,
+      color = "black",
+      na.rm = TRUE
+    ) +
+
+    scale_color_manual(
+      values = c(
+        "COL_Low" = "steelblue",
+        "COL_High" = "firebrick"
+      )
+    ) +
+
+    scale_y_continuous(
+      limits = c(0, NA),
+      expand = expansion(
+        mult = c(0, 0.08)
+      )
+    ) +
+
+    labs(
+      title = gene_i,
+      subtitle = paste0(
+        p_text,
+        "; ",
+        fdr_text,
+        "\nPaired tumors = ",
+        gene_stats_i$n_paired_samples
+      ),
+      x = NULL,
+      y = "Mean processed expression"
+    ) +
+
+    theme_classic(base_size = 11) +
+
+    theme(
+      legend.position = "none",
+
+      axis.text.x = element_text(
+        face = "bold"
+      ),
+
+      plot.title = element_text(
+        face = "bold",
+        hjust = 0.5
+      ),
+
+      plot.subtitle = element_text(
+        hjust = 0.5,
+        size = 9
+      )
+    )
+
+  print(p_gene)
+
+  ggsave(
+    filename = file.path(
+      plot_out_dir,
+      paste0(
+        "GeneExpression_COLLow_vs_COLHigh_Paired_",
+        gene_i,
+        ".pdf"
+      )
+    ),
+    plot = p_gene,
+    device = cairo_pdf,
+    width = 2.7,
+    height = 3.8,
+    units = "in"
+  )
+}
+```
+#### Remove leading edge as non-tumor control
+
+```{r}
+# ============================================================
+# CNV-filtered tumor-region analysis
+#
+# Retain:
+#   CT = cellular tumor
+#   IT = infiltrating tumor
+#
+# Exclude:
+#   LE = leading edge / more normal-brain-enriched region
+#
+# Original objects are not overwritten.
+# ============================================================
+
+# ------------------------------------------------------------
+# Confirm required metadata and alignment
+# ------------------------------------------------------------
+stopifnot(
+  "AF_CNV" %in% colnames(dot_meta_gbm),
+  identical(
+    dot_meta_gbm$barcode,
+    colnames(expr_gbm)
+  )
+)
+
+# Inspect categories before filtering
+table(
+  dot_meta_gbm$AF_CNV,
+  useNA = "ifany"
+)
+
+# ------------------------------------------------------------
+# Retain CT and IT spatial dots
+# ------------------------------------------------------------
+cnv_keep <- dot_meta_gbm$AF_CNV %in% c(
+  "CT",
+  "IT"
+)
+
+dot_meta_gbm_cnv <- dot_meta_gbm[
+  cnv_keep,
+  ,
+  drop = FALSE
+]
+
+expr_gbm_cnv <- expr_gbm[
+  ,
+  cnv_keep,
+  drop = FALSE
+]
+
+stopifnot(
+  nrow(dot_meta_gbm_cnv) == ncol(expr_gbm_cnv),
+  identical(
+    dot_meta_gbm_cnv$barcode,
+    colnames(expr_gbm_cnv)
+  ),
+  all(
+    dot_meta_gbm_cnv$AF_CNV %in% c("CT", "IT")
+  )
+)
+
+cat(
+  "Original GBM dots:",
+  nrow(dot_meta_gbm),
+  "\n"
+)
+
+cat(
+  "CT/IT retained dots:",
+  nrow(dot_meta_gbm_cnv),
+  "\n"
+)
+
+cat(
+  "Dots removed:",
+  sum(!cnv_keep),
+  "\n"
+)
+
+table(
+  dot_meta_gbm_cnv$AF_CNV,
+  useNA = "ifany"
+)
+
+table(
+  dot_meta_gbm_cnv$sample
+)
+
+
+# ============================================================
+# Recalculate collagen score using only CT/IT dots
+# ============================================================
+
+collagen_genes <- c(
+  "COL1A1",
+  "COL1A2",
+  "COL3A1"
+)
+
+stopifnot(
+  all(
+    collagen_genes %in% rownames(expr_gbm_cnv)
+  )
+)
+
+# Extract the three collagen genes
+collagen_expr_cnv <- t(
+  as.matrix(
+    expr_gbm_cnv[
+      collagen_genes,
+      ,
+      drop = FALSE
+    ]
+  )
+)
+
+collagen_df_cnv <- data.frame(
+  barcode = dot_meta_gbm_cnv$barcode,
+  sample = dot_meta_gbm_cnv$sample,
+
+  COL1A1 = collagen_expr_cnv[, "COL1A1"],
+  COL1A2 = collagen_expr_cnv[, "COL1A2"],
+  COL3A1 = collagen_expr_cnv[, "COL3A1"],
+
+  stringsAsFactors = FALSE
+)
+
+# Number of collagen genes detected per dot
+collagen_df_cnv$n_collagen_detected <- rowSums(
+  collagen_df_cnv[
+    ,
+    collagen_genes,
+    drop = FALSE
+  ] > 0
+)
+
+# Gene-wise z-score calculated within the CT/IT dots
+collagen_z_cnv <- scale(
+  collagen_df_cnv[
+    ,
+    collagen_genes,
+    drop = FALSE
+  ],
+  center = TRUE,
+  scale = TRUE
+)
+
+colnames(collagen_z_cnv) <- paste0(
+  collagen_genes,
+  "_z"
+)
+
+# Mean of the three collagen-gene z-scores
+collagen_df_cnv$collagen_score <- rowMeans(
+  collagen_z_cnv
+)
+
+collagen_df_cnv <- cbind(
+  collagen_df_cnv,
+  as.data.frame(collagen_z_cnv)
+)
+
+# ------------------------------------------------------------
+# Create new global median cutoff using CT/IT dots only
+# ------------------------------------------------------------
+global_collagen_cutoff_cnv <- median(
+  collagen_df_cnv$collagen_score,
+  na.rm = TRUE
+)
+
+collagen_df_cnv$collagen_group <- ifelse(
+  collagen_df_cnv$collagen_score >
+    global_collagen_cutoff_cnv,
+  "COL_High",
+  "COL_Low"
+)
+
+collagen_df_cnv$collagen_group <- factor(
+  collagen_df_cnv$collagen_group,
+  levels = c(
+    "COL_Low",
+    "COL_High"
+  )
+)
+
+cat(
+  "CNV-filtered collagen cutoff:",
+  global_collagen_cutoff_cnv,
+  "\n"
+)
+
+table(
+  collagen_df_cnv$collagen_group
+)
+
+summary(
+  collagen_df_cnv$collagen_score
+)
+
+
+# ============================================================
+# Add CNV-filtered collagen results to metadata
+# ============================================================
+
+dot_meta_gbm_cnv$collagen_score <-
+  collagen_df_cnv$collagen_score
+
+dot_meta_gbm_cnv$n_collagen_detected <-
+  collagen_df_cnv$n_collagen_detected
+
+dot_meta_gbm_cnv$collagen_group <-
+  collagen_df_cnv$collagen_group
+
+stopifnot(
+  identical(
+    dot_meta_gbm_cnv$barcode,
+    collagen_df_cnv$barcode
+  )
+)
+
+
+# ============================================================
+# Create CT/IT-filtered dot-level expression table
+# ============================================================
+
+gene_expr_gbm_cnv <- as.data.frame(
+  t(
+    as.matrix(expr_gbm_cnv)
+  ),
+  check.names = FALSE
+)
+
+gene_expr_gbm_cnv$barcode <-
+  dot_meta_gbm_cnv$barcode
+
+gene_expr_gbm_cnv$sample <-
+  dot_meta_gbm_cnv$sample
+
+gene_expr_gbm_cnv$AF_CNV <-
+  dot_meta_gbm_cnv$AF_CNV
+
+gene_expr_gbm_cnv$collagen_score <-
+  dot_meta_gbm_cnv$collagen_score
+
+gene_expr_gbm_cnv$collagen_group <-
+  dot_meta_gbm_cnv$collagen_group
+
+gene_expr_gbm_cnv <- gene_expr_gbm_cnv %>%
+  dplyr::select(
+    barcode,
+    sample,
+    AF_CNV,
+    collagen_group,
+    collagen_score,
+    dplyr::everything()
+  )
+
+stopifnot(
+  nrow(gene_expr_gbm_cnv) ==
+    nrow(dot_meta_gbm_cnv),
+
+  identical(
+    gene_expr_gbm_cnv$barcode,
+    dot_meta_gbm_cnv$barcode
+  )
+)
+
+dim(gene_expr_gbm_cnv)
+head(
+  gene_expr_gbm_cnv[, 1:9]
+)
+```
+```{r}
+# ============================================================
+# CNV-filtered selected-gene expression table
+# CT/IT dots only
+# ============================================================
+
+# ------------------------------------------------------------
+# Specify genes to analyze
+# ------------------------------------------------------------
+genes_to_plot_cnv <- c(
+  "IL2RA",
+  "CD163",
+  "IL10",
+  "MRC1",
+  "S100A8"
+)
+
+# Confirm requested genes are available
+missing_genes_cnv <- setdiff(
+  genes_to_plot_cnv,
+  colnames(gene_expr_gbm_cnv)
+)
+
+stopifnot(
+  length(missing_genes_cnv) == 0
+)
+
+# ------------------------------------------------------------
+# Convert selected genes to long format
+# ------------------------------------------------------------
+gene_expression_long_cnv <- gene_expr_gbm_cnv %>%
+  dplyr::select(
+    barcode,
+    sample,
+    AF_CNV,
+    collagen_group,
+    collagen_score,
+    dplyr::all_of(genes_to_plot_cnv)
+  ) %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(genes_to_plot_cnv),
+    names_to = "Gene",
+    values_to = "Expression"
+  ) %>%
+  dplyr::mutate(
+    collagen_group = factor(
+      collagen_group,
+      levels = c(
+        "COL_Low",
+        "COL_High"
+      )
+    ),
+    Gene = factor(
+      Gene,
+      levels = genes_to_plot_cnv
+    )
+  )
+
+# ------------------------------------------------------------
+# Validate dimensions
+# ------------------------------------------------------------
+stopifnot(
+  nrow(gene_expression_long_cnv) ==
+    nrow(gene_expr_gbm_cnv) *
+    length(genes_to_plot_cnv),
+
+  all(
+    gene_expression_long_cnv$AF_CNV %in%
+      c("CT", "IT")
+  )
+)
+
+dim(gene_expression_long_cnv)
+
+head(
+  gene_expression_long_cnv
+)
+
+# ============================================================
+# Inspect COL_Low and COL_High availability by sample
+# ============================================================
+
+cnv_sample_group_counts <- gene_expr_gbm_cnv %>%
+  dplyr::count(
+    sample,
+    collagen_group,
+    name = "n_dots"
+  ) %>%
+  tidyr::complete(
+    sample,
+    collagen_group = factor(
+      c("COL_Low", "COL_High"),
+      levels = c("COL_Low", "COL_High")
+    ),
+    fill = list(
+      n_dots = 0
+    )
+  ) %>%
+  dplyr::group_by(sample) %>%
+  dplyr::mutate(
+    total_sample_dots = sum(n_dots),
+    percent_of_sample = 100 * n_dots / total_sample_dots
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(
+    sample,
+    collagen_group
+  )
+
+cnv_sample_group_counts
+
+# Easier wide-format view
+cnv_sample_group_counts_wide <- cnv_sample_group_counts %>%
+  dplyr::select(
+    sample,
+    collagen_group,
+    n_dots,
+    percent_of_sample
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = collagen_group,
+    values_from = c(
+      n_dots,
+      percent_of_sample
+    ),
+    values_fill = 0
+  )
+
+cnv_sample_group_counts_wide
+```
+
+```{r}
+# ============================================================
+# CNV-filtered blocked heatmap
+#
+# Left block:  COL_Low CT/IT regions
+# Right block: COL_High CT/IT regions
+#
+# Each tile = mean gene expression within one tumor and
+# collagen category.
+#
+# Color = gene-wise z-score of sample-level mean expression.
+# Gray = that tumor had no dots in that collagen category.
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(scales)
+
+cnv_heatmap_out_dir <- "/Data/Outputs/Manuscript/UCSC/CNV_Filtered/Heatmaps"
+
+if (!dir.exists(cnv_heatmap_out_dir)) {
+  dir.create(
+    cnv_heatmap_out_dir,
+    recursive = TRUE
+  )
+}
+
+# ------------------------------------------------------------
+# Set sample and group order
+# ------------------------------------------------------------
+sample_order_cnv <- sort(
+  unique(gene_expression_long_cnv$sample)
+)
+
+collagen_group_order_cnv <- c(
+  "COL_Low",
+  "COL_High"
+)
+
+# ------------------------------------------------------------
+# Calculate sample-level mean expression
+#
+# All CT/IT dots are included, including target-gene zeros
+# ------------------------------------------------------------
+gene_sample_summary_cnv <- gene_expression_long_cnv %>%
+  dplyr::mutate(
+    Gene = as.character(Gene),
+    collagen_group = as.character(collagen_group)
+  ) %>%
+  dplyr::group_by(
+    Gene,
+    sample,
+    collagen_group
+  ) %>%
+  dplyr::summarise(
+    n_dots = dplyr::n(),
+
+    mean_expression = mean(
+      Expression,
+      na.rm = TRUE
+    ),
+
+    percent_detected = 100 * mean(
+      Expression > 0,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+# ------------------------------------------------------------
+# Add missing sample/category combinations
+#
+# Missing category:
+#   n_dots = 0
+#   mean expression = NA
+# ------------------------------------------------------------
+gene_sample_summary_cnv_complete <- gene_sample_summary_cnv %>%
+  tidyr::complete(
+    Gene = genes_to_plot_cnv,
+    sample = sample_order_cnv,
+    collagen_group = collagen_group_order_cnv,
+    fill = list(
+      n_dots = 0,
+      mean_expression = NA_real_,
+      percent_detected = NA_real_
+    )
+  )
+
+# ------------------------------------------------------------
+# Calculate gene-wise z-scores
+#
+# Z-scores are only for heatmap visualization.
+# Raw mean_expression will be used for statistics.
+# ------------------------------------------------------------
+gene_sample_heatmap_cnv <- gene_sample_summary_cnv_complete %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::mutate(
+    gene_mean = mean(
+      mean_expression,
+      na.rm = TRUE
+    ),
+
+    gene_sd = stats::sd(
+      mean_expression,
+      na.rm = TRUE
+    ),
+
+    mean_expression_z = dplyr::case_when(
+      is.na(mean_expression) ~ NA_real_,
+      is.na(gene_sd) ~ 0,
+      gene_sd == 0 ~ 0,
+      TRUE ~ (
+        mean_expression - gene_mean
+      ) / gene_sd
+    )
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    sample = factor(
+      sample,
+      levels = sample_order_cnv
+    ),
+
+    collagen_group = factor(
+      collagen_group,
+      levels = collagen_group_order_cnv
+    ),
+
+    Gene = factor(
+      Gene,
+      levels = rev(genes_to_plot_cnv)
+    )
+  )
+
+# ------------------------------------------------------------
+# Create blocked heatmap
+# ------------------------------------------------------------
+p_gene_heatmap_cnv <- ggplot(
+  gene_sample_heatmap_cnv,
+  aes(
+    x = sample,
+    y = Gene,
+    fill = mean_expression_z
+  )
+) +
+  geom_tile(
+    color = "white",
+    linewidth = 0.4
+  ) +
+
+  facet_grid(
+    cols = vars(collagen_group),
+    scales = "free_x",
+    space = "free_x",
+    drop = FALSE
+  ) +
+
+  scale_x_discrete(
+    drop = FALSE
+  ) +
+
+  scale_fill_gradient2(
+    low = "steelblue",
+    mid = "white",
+    high = "firebrick",
+    midpoint = 0,
+    limits = c(-2, 2),
+    oob = scales::squish,
+    na.value = "grey75",
+    name = "Mean expression\nz-score"
+  ) +
+
+  labs(
+    title = "Gene expression in CNV-filtered GBM regions",
+    subtitle = paste0(
+      "CT and IT dots only; gray indicates no dots ",
+      "in that tumor category"
+    ),
+    x = NULL,
+    y = NULL
+  ) +
+
+  theme_classic(base_size = 11) +
+
+  theme(
+    axis.line = element_blank(),
+    axis.ticks = element_blank(),
+
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      vjust = 0.5,
+      size = 7
+    ),
+
+    axis.text.y = element_text(
+      face = "italic",
+      size = 10
+    ),
+
+    strip.background = element_rect(
+      fill = "grey92",
+      color = "black",
+      linewidth = 0.7
+    ),
+
+    strip.text = element_text(
+      face = "bold",
+      size = 11
+    ),
+
+    panel.spacing.x = grid::unit(
+      0.35,
+      "cm"
+    ),
+
+    legend.position = "right",
+
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+
+    plot.subtitle = element_text(
+      hjust = 0.5,
+      size = 9
+    )
+  )
+
+print(p_gene_heatmap_cnv)
+
+# ------------------------------------------------------------
+# Save heatmap
+# ------------------------------------------------------------
+ggsave(
+  filename = file.path(
+    cnv_heatmap_out_dir,
+    "GeneExpression_CNVFiltered_COLLow_COLHigh_Heatmap.pdf"
+  ),
+  plot = p_gene_heatmap_cnv,
+  device = cairo_pdf,
+  width = 9,
+  height = 3.5,
+  units = "in"
+)
+
+# ------------------------------------------------------------
+# Save underlying raw and z-scored values
+# ------------------------------------------------------------
+write.csv(
+  gene_sample_heatmap_cnv,
+  file = file.path(
+    cnv_heatmap_out_dir,
+    "GeneExpression_CNVFiltered_Heatmap_Data.csv"
+  ),
+  row.names = FALSE
+)
+```
+```{r}
+# ============================================================
+# CNV-filtered paired sample-level gene-expression plots
+#
+# Each point = mean expression within one GBM tumor region
+# CT and IT dots only
+#
+# Gray lines connect COL_Low and COL_High values from
+# the same tumor.
+#
+# Black diamonds show group means using paired tumors only.
+#
+# Each gene panel:
+#   - begins at 0
+#   - ends at a clean rounded value
+#   - displays the upper limit as a labeled tick
+# ============================================================
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+cnv_analysis_out_dir <-
+  "/Data/Outputs/Manuscript/UCSC/CNV_Filtered/Paired_Analysis"
+
+if (!dir.exists(cnv_analysis_out_dir)) {
+  dir.create(
+    cnv_analysis_out_dir,
+    recursive = TRUE
+  )
+}
+
+
+# ============================================================
+# 1. Put COL_Low and COL_High means side by side
+# ============================================================
+
+gene_sample_pairs_cnv <- gene_sample_summary_cnv_complete %>%
+  tidyr::pivot_wider(
+    names_from = collagen_group,
+    values_from = c(
+      n_dots,
+      mean_expression,
+      percent_detected
+    ),
+    names_sep = "__"
+  ) %>%
+  dplyr::mutate(
+    has_pair =
+      !is.na(mean_expression__COL_Low) &
+      !is.na(mean_expression__COL_High),
+
+    mean_difference = dplyr::if_else(
+      has_pair,
+      mean_expression__COL_High -
+        mean_expression__COL_Low,
+      NA_real_
+    )
+  )
+
+
+# ============================================================
+# 2. Safe paired Wilcoxon-test function
+# ============================================================
+
+paired_wilcox_cnv <- function(low, high) {
+
+  keep <- stats::complete.cases(
+    low,
+    high
+  )
+
+  low <- low[keep]
+  high <- high[keep]
+
+  if (length(low) < 2) {
+    return(NA_real_)
+  }
+
+  differences <- high - low
+
+  if (all(differences == 0)) {
+    return(1)
+  }
+
+  suppressWarnings(
+    stats::wilcox.test(
+      x = high,
+      y = low,
+      paired = TRUE,
+      exact = FALSE
+    )$p.value
+  )
+}
+
+
+# ============================================================
+# 3. Run paired analysis across tumors
+# ============================================================
+
+gene_paired_statistics_cnv <- gene_sample_pairs_cnv %>%
+  dplyr::group_by(Gene) %>%
+  dplyr::summarise(
+    n_total_samples = dplyr::n(),
+
+    n_paired_samples = sum(
+      has_pair
+    ),
+
+    mean_COL_Low = if (
+      sum(has_pair) > 0
+    ) {
+      mean(
+        mean_expression__COL_Low[has_pair],
+        na.rm = TRUE
+      )
+    } else {
+      NA_real_
+    },
+
+    mean_COL_High = if (
+      sum(has_pair) > 0
+    ) {
+      mean(
+        mean_expression__COL_High[has_pair],
+        na.rm = TRUE
+      )
+    } else {
+      NA_real_
+    },
+
+    mean_difference = if (
+      sum(has_pair) > 0
+    ) {
+      mean(
+        mean_difference[has_pair],
+        na.rm = TRUE
+      )
+    } else {
+      NA_real_
+    },
+
+    median_difference = if (
+      sum(has_pair) > 0
+    ) {
+      median(
+        mean_difference[has_pair],
+        na.rm = TRUE
+      )
+    } else {
+      NA_real_
+    },
+
+    tumors_higher_in_COL_High = sum(
+      mean_difference > 0,
+      na.rm = TRUE
+    ),
+
+    tumors_higher_in_COL_Low = sum(
+      mean_difference < 0,
+      na.rm = TRUE
+    ),
+
+    tumors_with_no_difference = sum(
+      mean_difference == 0,
+      na.rm = TRUE
+    ),
+
+    p_value = paired_wilcox_cnv(
+      mean_expression__COL_Low,
+      mean_expression__COL_High
+    ),
+
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    FDR = stats::p.adjust(
+      p_value,
+      method = "BH"
+    )
+  ) %>%
+  dplyr::arrange(
+    FDR,
+    p_value
+  )
+
+gene_paired_statistics_cnv
+
+
+# ============================================================
+# 4. Create statistical labels
+# ============================================================
+
+gene_stat_labels_cnv <- gene_paired_statistics_cnv %>%
+  dplyr::mutate(
+    p_label = dplyr::case_when(
+      is.na(p_value) ~ "p = NA",
+
+      p_value < 0.001 ~
+        "p < 0.001",
+
+      TRUE ~ paste0(
+        "p = ",
+        formatC(
+          p_value,
+          format = "f",
+          digits = 3
+        )
+      )
+    ),
+
+    fdr_label = dplyr::case_when(
+      is.na(FDR) ~ "FDR = NA",
+
+      FDR < 0.001 ~
+        "FDR < 0.001",
+
+      TRUE ~ paste0(
+        "FDR = ",
+        formatC(
+          FDR,
+          format = "f",
+          digits = 3
+        )
+      )
+    ),
+
+    facet_label = paste0(
+      Gene,
+      "\n",
+      p_label,
+      "; ",
+      fdr_label,
+      "\npaired n = ",
+      n_paired_samples
+    )
+  ) %>%
+  dplyr::select(
+    Gene,
+    facet_label
+  )
+
+
+# ============================================================
+# 5. Prepare plotting data
+# ============================================================
+
+gene_sample_plot_cnv <- gene_sample_summary_cnv_complete %>%
+  dplyr::mutate(
+    Gene = as.character(Gene),
+
+    collagen_group = factor(
+      collagen_group,
+      levels = c(
+        "COL_Low",
+        "COL_High"
+      )
+    )
+  ) %>%
+  dplyr::left_join(
+    gene_stat_labels_cnv,
+    by = "Gene"
+  )
+
+
+# Identify tumors containing both collagen categories
+paired_sample_ids_cnv <- gene_sample_pairs_cnv %>%
+  dplyr::filter(
+    has_pair
+  ) %>%
+  dplyr::select(
+    Gene,
+    sample
+  )
+
+
+# Data used for gray paired lines and black diamonds
+paired_plot_data_cnv <- gene_sample_plot_cnv %>%
+  dplyr::inner_join(
+    paired_sample_ids_cnv,
+    by = c(
+      "Gene",
+      "sample"
+    )
+  ) %>%
+  dplyr::filter(
+    !is.na(mean_expression)
+  )
+
+
+# Preserve the requested gene order
+facet_order_cnv <- gene_stat_labels_cnv %>%
+  dplyr::slice(
+    match(
+      genes_to_plot_cnv,
+      Gene
+    )
+  ) %>%
+  dplyr::pull(
+    facet_label
+  )
+
+gene_sample_plot_cnv$facet_label <- factor(
+  gene_sample_plot_cnv$facet_label,
+  levels = facet_order_cnv
+)
+
+paired_plot_data_cnv$facet_label <- factor(
+  paired_plot_data_cnv$facet_label,
+  levels = facet_order_cnv
+)
+
+
+# ============================================================
+# 6. Calculate a clean upper y-axis value for each gene
+# ============================================================
+
+gene_axis_limits_cnv <- gene_sample_plot_cnv %>%
+  dplyr::filter(
+    !is.na(mean_expression)
+  ) %>%
+  dplyr::group_by(
+    Gene,
+    facet_label
+  ) %>%
+  dplyr::summarise(
+    data_max = max(
+      mean_expression,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    y_axis_top = vapply(
+      data_max,
+      function(x) {
+
+        if (!is.finite(x) || x <= 0) {
+          return(1)
+        }
+
+        # Add approximately 8% space and round upward
+        # to a clean axis value
+        max(
+          pretty(
+            c(
+              0,
+              x * 1.08
+            ),
+            n = 4
+          )
+        )
+      },
+      numeric(1)
+    ),
+
+    facet_label = factor(
+      facet_label,
+      levels = facet_order_cnv
+    )
+  )
+
+
+# Create invisible points at 0 and the upper axis value
+# so that every panel starts and ends exactly there
+axis_anchor_data_cnv <- dplyr::bind_rows(
+  gene_axis_limits_cnv %>%
+    dplyr::transmute(
+      Gene,
+      facet_label,
+      collagen_group = factor(
+        "COL_Low",
+        levels = c(
+          "COL_Low",
+          "COL_High"
+        )
+      ),
+      axis_value = 0
+    ),
+
+  gene_axis_limits_cnv %>%
+    dplyr::transmute(
+      Gene,
+      facet_label,
+      collagen_group = factor(
+        "COL_Low",
+        levels = c(
+          "COL_Low",
+          "COL_High"
+        )
+      ),
+      axis_value = y_axis_top
+    )
+)
+
+gene_axis_limits_cnv
+
+
+# ============================================================
+# 7. Create combined paired dot plot
+# ============================================================
+
+p_gene_paired_cnv <- ggplot(
+  gene_sample_plot_cnv,
+  aes(
+    x = collagen_group,
+    y = mean_expression
+  )
+) +
+
+  # Invisible anchors force each panel to begin at 0
+  # and end at its rounded upper value
+  geom_blank(
+    data = axis_anchor_data_cnv,
+    aes(
+      x = collagen_group,
+      y = axis_value
+    ),
+    inherit.aes = FALSE
+  ) +
+
+  # Connect COL_Low and COL_High values
+  # from the same paired tumor
+  geom_line(
+    data = paired_plot_data_cnv,
+    aes(
+      group = sample
+    ),
+    color = "grey65",
+    linewidth = 0.7,
+    alpha = 0.8
+  ) +
+
+  # Show all available sample-level means
+  geom_point(
+    aes(
+      color = collagen_group
+    ),
+    position = position_jitter(
+      width = 0.035,
+      height = 0,
+      seed = 123
+    ),
+    size = 2.5,
+    alpha = 0.9,
+    na.rm = TRUE
+  ) +
+
+  # Black diamonds show means from paired tumors only
+  stat_summary(
+    data = paired_plot_data_cnv,
+    aes(
+      group = collagen_group
+    ),
+    fun = mean,
+    geom = "point",
+    size = 2.5,
+    alpha = 0.5,
+    color = "grey",
+    na.rm = TRUE
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "COL_Low" = "steelblue",
+      "COL_High" = "firebrick"
+    )
+  ) +
+
+  facet_wrap(
+    ~ facet_label,
+    scales = "free_y",
+    nrow = 1
+  ) +
+
+  scale_y_continuous(
+    breaks = function(limits) {
+
+      # Include normal clean breaks plus the exact
+      # upper and lower limits
+      sort(
+        unique(
+          c(
+            pretty(
+              limits,
+              n = 4
+            ),
+            limits[1],
+            limits[2]
+          )
+        )
+      )
+    },
+
+    expand = expansion(
+      mult = c(0, 0)
+    )
+  ) +
+
+  labs(
+    title = "Gene expression in CNV-filtered GBM regions",
+
+    subtitle = paste0(
+      "CT and IT regions only; each point represents one tumor; ",
+      "black diamonds show means from paired tumors"
+    ),
+
+    x = NULL,
+    y = "Mean processed expression",
+    color = NULL
+  ) +
+
+  theme_classic(
+    base_size = 11
+  ) +
+
+  theme(
+    legend.position = "top",
+
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      face = "bold"
+    ),
+
+    strip.background = element_blank(),
+
+    strip.text = element_text(
+      face = "bold",
+      size = 9
+    ),
+
+    panel.spacing.x = grid::unit(
+      0.4,
+      "cm"
+    ),
+
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+
+    plot.subtitle = element_text(
+      hjust = 0.5,
+      size = 9
+    )
+  )
+
+print(
+  p_gene_paired_cnv
+)
+
+
+# ============================================================
+# 8. Save combined plot
+# ============================================================
+
+ggsave(
+  filename = file.path(
+    cnv_analysis_out_dir,
+    paste0(
+      "GeneExpression_CNVFiltered_",
+      "COLLow_vs_COLHigh_Paired_AllGenes.pdf"
+    )
+  ),
+  plot = p_gene_paired_cnv,
+  device = cairo_pdf,
+  width = 12,
+  height = 4,
+  units = "in"
+)
+
+
+# ============================================================
+# 9. Save underlying statistical results
+# ============================================================
+
+write.csv(
+  gene_sample_pairs_cnv,
+  file = file.path(
+    cnv_analysis_out_dir,
+    "GeneExpression_CNVFiltered_Paired_Values.csv"
+  ),
+  row.names = FALSE
+)
+
+write.csv(
+  gene_paired_statistics_cnv,
+  file = file.path(
+    cnv_analysis_out_dir,
+    "GeneExpression_CNVFiltered_Paired_Statistics.csv"
+  ),
+  row.names = FALSE
+)
+```
+
 ## GSE121810
 
 ```{r}
