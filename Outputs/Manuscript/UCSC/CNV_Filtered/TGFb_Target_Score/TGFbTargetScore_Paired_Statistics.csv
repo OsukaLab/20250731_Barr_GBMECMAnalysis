@@ -1,0 +1,2 @@
+"n_total_samples","n_paired_samples","n_score_genes","mean_COL_Low","mean_COL_High","mean_difference","median_difference","tumors_higher_in_COL_High","tumors_higher_in_COL_Low","tumors_with_no_difference","p_value"
+13,11,33,-0.246477817930329,0.0872760957709926,0.333753913701321,0.237705850703032,11,0,0,0.00385729282994253
