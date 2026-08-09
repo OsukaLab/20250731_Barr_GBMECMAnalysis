@@ -2318,6 +2318,159 @@ write.csv(
 )
 ```
 
+```{r}
+# ============================================================
+# Volcano: CollagenHigh vs CollagenLow (ALL tumors)
+# No gene labels
+# ============================================================
+
+stopifnot(
+  exists("de_col_high_vs_low")
+)
+
+fdr_cutoff   <- 0.05
+logfc_cutoff <- 1
+
+
+# ============================================================
+# 1. Prepare volcano data
+# ============================================================
+
+vol_col <- de_col_high_vs_low %>%
+  dplyr::mutate(
+
+    neglog10FDR = -log10(
+      adj.P.Val
+    ),
+
+    direction = dplyr::case_when(
+
+      adj.P.Val < fdr_cutoff &
+        logFC >= logfc_cutoff ~
+        "Up in CollagenHigh",
+
+      adj.P.Val < fdr_cutoff &
+        logFC <= -logfc_cutoff ~
+        "Up in CollagenLow",
+
+      TRUE ~
+        "Not significant"
+    )
+  )
+
+
+# ============================================================
+# 2. Create volcano plot
+# ============================================================
+
+col_volcano <- ggplot(
+  vol_col,
+  aes(
+    x = logFC,
+    y = neglog10FDR
+  )
+) +
+
+  geom_point(
+    aes(
+      color = direction
+    ),
+    alpha = 0.6,
+    size = 1.2
+  ) +
+
+  # FDR significance threshold
+  geom_hline(
+    yintercept = -log10(
+      fdr_cutoff
+    ),
+    linetype = "dashed"
+  ) +
+
+  # logFC thresholds
+  geom_vline(
+    xintercept = c(
+      -logfc_cutoff,
+      logfc_cutoff
+    ),
+    linetype = "dotted"
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "Up in CollagenHigh" = "firebrick",
+      "Up in CollagenLow"  = "steelblue",
+      "Not significant"    = "grey70"
+    )
+  ) +
+
+  labs(
+    title = "CollagenHigh vs CollagenLow (All tumors)",
+    subtitle = paste0(
+      "FDR < ",
+      fdr_cutoff,
+      " | |logFC| \u2265 ",
+      logfc_cutoff
+    ),
+    x = "logFC (High / Low)",
+    y = "-log10(FDR)",
+    color = ""
+  ) +
+
+  theme_bw(
+    base_size = 11
+  ) +
+
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+
+
+print(
+  col_volcano
+)
+
+
+# ============================================================
+# 3. Save volcano plot and underlying data
+# ============================================================
+
+out_dir <- "/Data/Outputs/Manuscript"
+
+if (!dir.exists(out_dir)) {
+  dir.create(
+    out_dir,
+    recursive = TRUE
+  )
+}
+
+
+ggsave(
+  filename = file.path(
+    out_dir,
+    "CollagenHigh_vs_CollagenLow_ALLtumors_Volcano.pdf"
+  ),
+  plot = col_volcano,
+  device = cairo_pdf,
+  width = 5,
+  height = 5,
+  units = "in",
+  dpi = 300
+)
+
+
+write.csv(
+  vol_col,
+  file = file.path(
+    out_dir,
+    "CollagenHigh_vs_CollagenLow_ALLtumors_volcano.csv"
+  ),
+  row.names = FALSE
+)
+```
+
 
 ```{r}
 # GSEA: CollagenHigh vs CollagenLow (ALL tumors) — GO BP
