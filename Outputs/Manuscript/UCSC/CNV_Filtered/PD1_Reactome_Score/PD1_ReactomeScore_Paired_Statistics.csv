@@ -1,0 +1,2 @@
+"pathway","reactome_id","n_pathway_genes_requested","n_pathway_genes_available","n_pathway_genes_used","pathway_gene_coverage_percent","n_total_samples","n_paired_samples","mean_COL_Low","mean_COL_High","mean_difference","median_difference","tumors_higher_in_COL_High","tumors_higher_in_COL_Low","tumors_with_no_difference","p_value"
+"REACTOME_CO_INHIBITION_BY_PD_1","R-HSA-389948",224,156,156,69.6428571428571,13,11,-0.0765012422859327,0.0469456592851796,0.123446901571112,0.117468391221659,9,2,0,0.00871925545288926

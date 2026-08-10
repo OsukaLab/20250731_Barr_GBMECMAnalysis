@@ -23,3 +23,5 @@ Inputs/UCSC/filtered_100_genes.mtx
 Inputs/UCSC/genes_of_interest.txt
 Inputs/UCSC/meta.tsv
 Inputs/UCSC/filtered_100_genes_features.tsv
+Inputs/UCSC/genes_missing_from_UCSC.txt
+Inputs/UCSC/genes_of_interest_master_623.txt

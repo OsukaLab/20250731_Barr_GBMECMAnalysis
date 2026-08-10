@@ -4841,9 +4841,9 @@ length(genes)
 length(barcodes)
 
 stopifnot(
-  nrow(expr_selected) == 100,
+  nrow(expr_selected) == 512,
   ncol(expr_selected) == 115914,
-  length(genes) == 100,
+  length(genes) == 512,
   length(barcodes) == 115914
 )
 
@@ -11398,5 +11398,1667 @@ write.csv(
   ),
   row.names = FALSE
 )
+```
+
+```{r}
+# ============================================================
+# CNV-filtered Reactome PD-1 co-inhibition score
+#
+# Pathway:
+#   REACTOME_CO_INHIBITION_BY_PD_1
+#   Reactome R-HSA-389948
+#
+# Score:
+#   Mean gene-wise z-score across available Reactome PD-1
+#   pathway genes for each CT/IT dot.
+#
+# Statistical unit:
+#   One tumor-level mean score per collagen category.
+#
+# Test:
+#   Paired Wilcoxon test comparing COL_Low vs COL_High.
+#
+# Interpretation:
+#   Higher score = greater expression of the transcriptional
+#   program represented by the Reactome PD-1 co-inhibition
+#   pathway.
+#
+# IMPORTANT:
+#   This is a pathway-expression/module score.
+#   It should not be described as a direct biochemical
+#   measurement of PD-1 receptor activation.
+# ============================================================
+
+
+pd1_reactome_out_dir <-
+  "/Data/Outputs/Manuscript/UCSC/CNV_Filtered/PD1_Reactome_Score"
+
+if (!dir.exists(pd1_reactome_out_dir)) {
+  dir.create(
+    pd1_reactome_out_dir,
+    recursive = TRUE
+  )
+}
+
+
+# ============================================================
+# 1. Define Reactome PD-1 pathway genes
+#
+# MSigDB:
+#   REACTOME_CO_INHIBITION_BY_PD_1
+#
+# Reactome:
+#   R-HSA-389948
+#
+# Current MSigDB set contains 224 genes.
+# ============================================================
+
+pd1_reactome_gene_text_cnv <- paste(
+  c(
+
+    "ADRM1 AGO1 AGO2 AGO3 AGO4 ASH2L ATF3 B3GNT3 BRD4 BTRC CCND1 CD247 CD274 CD3D CD3E CD3G CD4 CDK4 COPS5 CREBBP",
+
+    "CSK CSNK2A1 CSNK2A2 CSNK2B CTNNB1 CUL1 CUL3 DAD1 DDOST DERL1 DERL2 DERL3 DPY30 EED EP300 EPAS1 ERLEC1 ERLIN1 ERLIN2 EZH2",
+
+    "FOS FOSB GSK3B H2AB1 H2AC14 H2AC18 H2AC19 H2AC20 H2AC4 H2AC6 H2AC7 H2AC8 H2AJ H2AX H2AZ2 H2BC1 H2BC10 H2BC11 H2BC12 H2BC12L",
+
+    "H2BC13 H2BC14 H2BC15 H2BC17 H2BC21 H2BC26 H2BC3 H2BC4 H2BC5 H2BC6 H2BC7 H2BC8 H2BC9 H3-3A H3-3B H3C1 H3C10 H3C11 H3C12 H3C13",
+
+    "H3C14 H3C15 H3C2 H3C3 H3C4 H3C6 H3C7 H3C8 H4C1 H4C11 H4C12 H4C13 H4C14 H4C15 H4C16 H4C2 H4C3 H4C4 H4C5 H4C6",
+
+    "H4C8 H4C9 HIF1A HLA-DPA1 HLA-DPB1 HLA-DQA1 HLA-DQA2 HLA-DQB1 HLA-DQB2 HLA-DRA HLA-DRB1 HLA-DRB3 HLA-DRB4 HLA-DRB5 IRF1 JAK1 JUN JUND KMT2A KMT2C",
+
+    "LCK LEF1 MAGT1 MIB2 MIR200B MIR200C MIR34B MIR34C MIRLET7A1 MOV10 MYC MYCN NEK2 NFE2L2 NFKB1 NFKB2 OS9 OST4 OSTC PDCD1",
+
+    "PDCD1LG2 PRKAA1 PRKAA2 PRKAB1 PRKAB2 PRKAG1 PRKAG2 PRKAG3 PSMA1 PSMA2 PSMA3 PSMA4 PSMA5 PSMA6 PSMA7 PSMB1 PSMB2 PSMB3 PSMB4 PSMB5",
+
+    "PSMB6 PSMB7 PSMC1 PSMC2 PSMC3 PSMC4 PSMC5 PSMC6 PSMD1 PSMD11 PSMD12 PSMD13 PSMD14 PSMD2 PSMD3 PSMD6 PSMD7 PSMD8 PTPN11 PTPN6",
+
+    "RBBP4 RBBP5 RBBP7 RBX1 RELA RNF185 RNF5 RPN1 RPN2 RPS27A SEL1L SEM1 SKP1 SPOP STAT1 STAT3 STT3A STT3B SUZ12 TCF7",
+
+    "TCF7L1 TCF7L2 TEAD1 TEAD2 TEAD3 TEAD4 TMEM258 TNRC6A TNRC6B TNRC6C TRAV19 TRAV29DV5 TRAV8-4 TRBV12-3 TRBV7-9 TUSC3 UBA52 UBB UBC VCP",
+
+    "WDR5 WWTR1 YAP1 YWHAG"
+  ),
+  collapse = " "
+)
+
+
+pd1_reactome_genes_requested_cnv <- unique(
+  strsplit(
+    pd1_reactome_gene_text_cnv,
+    split = "[[:space:]]+"
+  )[[1]]
+)
+
+
+stopifnot(
+  length(pd1_reactome_genes_requested_cnv) == 224
+)
+
+
+# ============================================================
+# 2. Identify pathway genes available in our spatial dataset
+# ============================================================
+
+available_pd1_reactome_genes_cnv <-
+  pd1_reactome_genes_requested_cnv[
+    pd1_reactome_genes_requested_cnv %in%
+      colnames(gene_expr_gbm_cnv)
+  ]
+
+
+missing_pd1_reactome_genes_cnv <- setdiff(
+  pd1_reactome_genes_requested_cnv,
+  colnames(gene_expr_gbm_cnv)
+)
+
+
+cat(
+  "Reactome PD-1 genes requested:",
+  length(pd1_reactome_genes_requested_cnv),
+  "\n"
+)
+
+cat(
+  "Reactome PD-1 genes available:",
+  length(available_pd1_reactome_genes_cnv),
+  "\n"
+)
+
+cat(
+  "Reactome PD-1 genes missing:",
+  length(missing_pd1_reactome_genes_cnv),
+  "\n"
+)
+
+cat(
+  "Reactome PD-1 pathway coverage:",
+  round(
+    100 *
+      length(available_pd1_reactome_genes_cnv) /
+      length(pd1_reactome_genes_requested_cnv),
+    1
+  ),
+  "%\n"
+)
+
+
+if (length(missing_pd1_reactome_genes_cnv) > 0) {
+
+  message(
+    "Unavailable Reactome PD-1 genes omitted from score: ",
+    paste(
+      missing_pd1_reactome_genes_cnv,
+      collapse = ", "
+    )
+  )
+}
+
+
+stopifnot(
+  length(available_pd1_reactome_genes_cnv) >= 2
+)
+
+
+# ============================================================
+# 3. Confirm key PD-1-axis genes
+# ============================================================
+
+pd1_key_genes_cnv <- c(
+  "PDCD1",
+  "CD274",
+  "PDCD1LG2",
+  "PTPN6",
+  "PTPN11",
+  "CD247",
+  "CD3D",
+  "CD3E",
+  "CD3G",
+  "LCK"
+)
+
+
+pd1_key_gene_check_cnv <- tibble::tibble(
+  Gene = pd1_key_genes_cnv,
+  Present = pd1_key_genes_cnv %in%
+    colnames(gene_expr_gbm_cnv)
+)
+
+
+pd1_key_gene_check_cnv
+
+
+# ============================================================
+# 4. Subset to CNV-filtered CT/IT dots
+#
+# All dots are retained, including zero-expression dots.
+# ============================================================
+
+pd1_reactome_score_data_cnv <- gene_expr_gbm_cnv %>%
+  dplyr::filter(
+
+    AF_CNV %in% c(
+      "CT",
+      "IT"
+    ),
+
+    collagen_group %in% c(
+      "COL_Low",
+      "COL_High"
+    )
+  ) %>%
+  dplyr::mutate(
+
+    collagen_group = factor(
+      collagen_group,
+      levels = c(
+        "COL_Low",
+        "COL_High"
+      )
+    )
+  )
+
+
+stopifnot(
+  nrow(pd1_reactome_score_data_cnv) > 0
+)
+
+
+# ============================================================
+# 5. Create Reactome PD-1 expression matrix
+# ============================================================
+
+pd1_reactome_expression_matrix_cnv <- as.matrix(
+  pd1_reactome_score_data_cnv[
+    ,
+    available_pd1_reactome_genes_cnv,
+    drop = FALSE
+  ]
+)
+
+
+storage.mode(
+  pd1_reactome_expression_matrix_cnv
+) <- "numeric"
+
+
+# ============================================================
+# 6. Remove genes with no expression variance
+#
+# A gene with zero variance cannot be z-scored and therefore
+# cannot contribute information to the pathway score.
+# ============================================================
+
+pd1_reactome_gene_sds_cnv <- apply(
+  pd1_reactome_expression_matrix_cnv,
+  MARGIN = 2,
+  FUN = stats::sd,
+  na.rm = TRUE
+)
+
+
+zero_variance_pd1_reactome_genes_cnv <- names(
+  pd1_reactome_gene_sds_cnv
+)[
+  !is.finite(pd1_reactome_gene_sds_cnv) |
+    pd1_reactome_gene_sds_cnv == 0
+]
+
+
+if (
+  length(
+    zero_variance_pd1_reactome_genes_cnv
+  ) > 0
+) {
+
+  message(
+    "Zero-variance Reactome PD-1 genes omitted: ",
+    paste(
+      zero_variance_pd1_reactome_genes_cnv,
+      collapse = ", "
+    )
+  )
+}
+
+
+pd1_reactome_score_genes_used_cnv <- setdiff(
+  available_pd1_reactome_genes_cnv,
+  zero_variance_pd1_reactome_genes_cnv
+)
+
+
+stopifnot(
+  length(pd1_reactome_score_genes_used_cnv) >= 2
+)
+
+
+pd1_reactome_expression_matrix_cnv <-
+  pd1_reactome_expression_matrix_cnv[
+    ,
+    pd1_reactome_score_genes_used_cnv,
+    drop = FALSE
+  ]
+
+
+cat(
+  "Reactome PD-1 genes used in final score:",
+  length(pd1_reactome_score_genes_used_cnv),
+  "\n"
+)
+
+
+# ============================================================
+# 7. Calculate gene-wise z-scores across all CT/IT dots
+#
+# Each gene therefore contributes on the same standardized
+# scale regardless of its absolute expression magnitude.
+# ============================================================
+
+pd1_reactome_gene_means_cnv <- colMeans(
+  pd1_reactome_expression_matrix_cnv,
+  na.rm = TRUE
+)
+
+
+pd1_reactome_gene_sds_cnv <- apply(
+  pd1_reactome_expression_matrix_cnv,
+  MARGIN = 2,
+  FUN = stats::sd,
+  na.rm = TRUE
+)
+
+
+pd1_reactome_z_matrix_cnv <- sweep(
+  pd1_reactome_expression_matrix_cnv,
+  MARGIN = 2,
+  STATS = pd1_reactome_gene_means_cnv,
+  FUN = "-"
+)
+
+
+pd1_reactome_z_matrix_cnv <- sweep(
+  pd1_reactome_z_matrix_cnv,
+  MARGIN = 2,
+  STATS = pd1_reactome_gene_sds_cnv,
+  FUN = "/"
+)
+
+
+# ============================================================
+# 8. Calculate one Reactome PD-1 score per spatial dot
+#
+# Score = mean standardized expression across pathway genes.
+# ============================================================
+
+pd1_reactome_score_data_cnv$PD1_Reactome_Score <- rowMeans(
+  pd1_reactome_z_matrix_cnv,
+  na.rm = TRUE
+)
+
+
+pd1_reactome_score_data_cnv$PD1_Reactome_Score[
+  !is.finite(
+    pd1_reactome_score_data_cnv$PD1_Reactome_Score
+  )
+] <- NA_real_
+
+
+summary(
+  pd1_reactome_score_data_cnv$PD1_Reactome_Score
+)
+
+
+# ============================================================
+# 9. Calculate tumor-level mean pathway scores
+#
+# Statistical unit = tumor, NOT individual spatial dot.
+# ============================================================
+
+sample_order_pd1_reactome_cnv <- sort(
+  unique(
+    pd1_reactome_score_data_cnv$sample
+  )
+)
+
+
+pd1_reactome_sample_summary_cnv <-
+  pd1_reactome_score_data_cnv %>%
+  dplyr::group_by(
+    sample,
+    collagen_group
+  ) %>%
+  dplyr::summarise(
+
+    n_dots = sum(
+      !is.na(PD1_Reactome_Score)
+    ),
+
+    mean_PD1_score = mean(
+      PD1_Reactome_Score,
+      na.rm = TRUE
+    ),
+
+    median_PD1_score = median(
+      PD1_Reactome_Score,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    collagen_group = as.character(
+      collagen_group
+    )
+  ) %>%
+  tidyr::complete(
+
+    sample = sample_order_pd1_reactome_cnv,
+
+    collagen_group = c(
+      "COL_Low",
+      "COL_High"
+    ),
+
+    fill = list(
+      n_dots = 0,
+      mean_PD1_score = NA_real_,
+      median_PD1_score = NA_real_
+    )
+  ) %>%
+  dplyr::mutate(
+
+    sample = factor(
+      sample,
+      levels = sample_order_pd1_reactome_cnv
+    ),
+
+    collagen_group = factor(
+      collagen_group,
+      levels = c(
+        "COL_Low",
+        "COL_High"
+      )
+    )
+  )
+
+
+# ============================================================
+# 10. Put paired COL_Low and COL_High scores side by side
+# ============================================================
+
+pd1_reactome_score_pairs_cnv <-
+  pd1_reactome_sample_summary_cnv %>%
+  tidyr::pivot_wider(
+
+    names_from = collagen_group,
+
+    values_from = c(
+      n_dots,
+      mean_PD1_score,
+      median_PD1_score
+    ),
+
+    names_sep = "__"
+  ) %>%
+  dplyr::mutate(
+
+    has_pair =
+      !is.na(mean_PD1_score__COL_Low) &
+      !is.na(mean_PD1_score__COL_High),
+
+    score_difference =
+      mean_PD1_score__COL_High -
+      mean_PD1_score__COL_Low
+  )
+
+
+pd1_reactome_score_pairs_cnv
+
+
+# ============================================================
+# 11. Paired Wilcoxon test
+# ============================================================
+
+paired_pd1_reactome_scores_cnv <-
+  pd1_reactome_score_pairs_cnv %>%
+  dplyr::filter(
+    has_pair
+  )
+
+
+n_paired_pd1_reactome_cnv <- nrow(
+  paired_pd1_reactome_scores_cnv
+)
+
+
+if (n_paired_pd1_reactome_cnv < 2) {
+
+  pd1_reactome_p_value_cnv <- NA_real_
+
+} else if (
+
+  all(
+    paired_pd1_reactome_scores_cnv$
+      score_difference == 0
+  )
+
+) {
+
+  pd1_reactome_p_value_cnv <- 1
+
+} else {
+
+  pd1_reactome_p_value_cnv <- suppressWarnings(
+    stats::wilcox.test(
+
+      x =
+        paired_pd1_reactome_scores_cnv$
+          mean_PD1_score__COL_High,
+
+      y =
+        paired_pd1_reactome_scores_cnv$
+          mean_PD1_score__COL_Low,
+
+      paired = TRUE,
+
+      exact = FALSE,
+
+      alternative = "two.sided"
+
+    )$p.value
+  )
+}
+
+
+# ============================================================
+# 12. Create statistics table
+# ============================================================
+
+pd1_reactome_score_statistics_cnv <- tibble::tibble(
+
+  pathway =
+    "REACTOME_CO_INHIBITION_BY_PD_1",
+
+  reactome_id =
+    "R-HSA-389948",
+
+  n_pathway_genes_requested =
+    length(
+      pd1_reactome_genes_requested_cnv
+    ),
+
+  n_pathway_genes_available =
+    length(
+      available_pd1_reactome_genes_cnv
+    ),
+
+  n_pathway_genes_used =
+    length(
+      pd1_reactome_score_genes_used_cnv
+    ),
+
+  pathway_gene_coverage_percent =
+    100 *
+      length(
+        available_pd1_reactome_genes_cnv
+      ) /
+      length(
+        pd1_reactome_genes_requested_cnv
+      ),
+
+  n_total_samples =
+    nrow(
+      pd1_reactome_score_pairs_cnv
+    ),
+
+  n_paired_samples =
+    n_paired_pd1_reactome_cnv,
+
+  mean_COL_Low = mean(
+    paired_pd1_reactome_scores_cnv$
+      mean_PD1_score__COL_Low,
+    na.rm = TRUE
+  ),
+
+  mean_COL_High = mean(
+    paired_pd1_reactome_scores_cnv$
+      mean_PD1_score__COL_High,
+    na.rm = TRUE
+  ),
+
+  mean_difference = mean(
+    paired_pd1_reactome_scores_cnv$
+      score_difference,
+    na.rm = TRUE
+  ),
+
+  median_difference = median(
+    paired_pd1_reactome_scores_cnv$
+      score_difference,
+    na.rm = TRUE
+  ),
+
+  tumors_higher_in_COL_High = sum(
+    paired_pd1_reactome_scores_cnv$
+      score_difference > 0,
+    na.rm = TRUE
+  ),
+
+  tumors_higher_in_COL_Low = sum(
+    paired_pd1_reactome_scores_cnv$
+      score_difference < 0,
+    na.rm = TRUE
+  ),
+
+  tumors_with_no_difference = sum(
+    paired_pd1_reactome_scores_cnv$
+      score_difference == 0,
+    na.rm = TRUE
+  ),
+
+  p_value =
+    pd1_reactome_p_value_cnv
+)
+
+
+pd1_reactome_score_statistics_cnv
+
+
+# ============================================================
+# 13. Statistical label for figure
+# ============================================================
+
+pd1_reactome_p_label_cnv <- dplyr::case_when(
+
+  is.na(pd1_reactome_p_value_cnv) ~
+    "p = NA",
+
+  pd1_reactome_p_value_cnv < 0.001 ~
+    "p < 0.001",
+
+  TRUE ~ paste0(
+    "p = ",
+    formatC(
+      pd1_reactome_p_value_cnv,
+      format = "f",
+      digits = 3
+    )
+  )
+)
+
+
+pd1_reactome_subtitle_cnv <- paste0(
+
+  "CT and IT regions only; paired Wilcoxon test; ",
+
+  pd1_reactome_p_label_cnv,
+
+  "; paired n = ",
+  n_paired_pd1_reactome_cnv,
+
+  "; score genes = ",
+  length(
+    pd1_reactome_score_genes_used_cnv
+  )
+)
+
+
+# ============================================================
+# 14. Prepare paired plotting data
+# ============================================================
+
+paired_pd1_sample_ids_cnv <-
+  paired_pd1_reactome_scores_cnv %>%
+  dplyr::select(
+    sample
+  )
+
+
+paired_pd1_reactome_plot_data_cnv <-
+  pd1_reactome_sample_summary_cnv %>%
+  dplyr::inner_join(
+    paired_pd1_sample_ids_cnv,
+    by = "sample"
+  ) %>%
+  dplyr::filter(
+    !is.na(mean_PD1_score)
+  )
+
+
+# ============================================================
+# 15. Calculate clean y-axis limits
+# ============================================================
+
+pd1_reactome_score_range_cnv <- range(
+  pd1_reactome_sample_summary_cnv$mean_PD1_score,
+  na.rm = TRUE
+)
+
+
+stopifnot(
+  all(
+    is.finite(
+      pd1_reactome_score_range_cnv
+    )
+  )
+)
+
+
+if (
+  diff(
+    pd1_reactome_score_range_cnv
+  ) == 0
+) {
+
+  pd1_reactome_score_range_cnv <-
+    pd1_reactome_score_range_cnv +
+    c(
+      -0.5,
+      0.5
+    )
+}
+
+
+pd1_reactome_score_breaks_cnv <- pretty(
+  pd1_reactome_score_range_cnv,
+  n = 5
+)
+
+
+pd1_reactome_y_min_cnv <- min(
+  pd1_reactome_score_breaks_cnv
+)
+
+
+pd1_reactome_y_max_cnv <- max(
+  pd1_reactome_score_breaks_cnv
+)
+
+
+pd1_reactome_score_breaks_cnv <-
+  pd1_reactome_score_breaks_cnv[
+    pd1_reactome_score_breaks_cnv >=
+      pd1_reactome_y_min_cnv &
+      pd1_reactome_score_breaks_cnv <=
+        pd1_reactome_y_max_cnv
+  ]
+
+
+# ============================================================
+# 16. Create paired Reactome PD-1 score plot
+# ============================================================
+
+p_pd1_reactome_score_cnv <- ggplot(
+  pd1_reactome_sample_summary_cnv,
+  aes(
+    x = collagen_group,
+    y = mean_PD1_score
+  )
+) +
+
+  # Gray lines connect COL_Low and COL_High
+  # values from the same tumor
+  geom_line(
+    data = paired_pd1_reactome_plot_data_cnv,
+    aes(
+      group = sample
+    ),
+    color = "grey65",
+    linewidth = 0.7,
+    alpha = 0.8
+  ) +
+
+  # Each point = one tumor-level mean
+  geom_point(
+    aes(
+      color = collagen_group
+    ),
+    position = position_jitter(
+      width = 0.035,
+      height = 0,
+      seed = 123
+    ),
+    size = 2.8,
+    alpha = 0.9,
+    na.rm = TRUE
+  ) +
+
+  # Black diamonds = means across paired tumors
+  stat_summary(
+    data = paired_pd1_reactome_plot_data_cnv,
+    aes(
+      group = collagen_group
+    ),
+    fun = mean,
+    geom = "point",
+    shape = 18,
+    size = 4,
+    color = "black",
+    na.rm = TRUE
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "COL_Low" = "steelblue",
+      "COL_High" = "firebrick"
+    ),
+    drop = FALSE
+  ) +
+
+  scale_y_continuous(
+    limits = c(
+      pd1_reactome_y_min_cnv,
+      pd1_reactome_y_max_cnv
+    ),
+
+    breaks =
+      pd1_reactome_score_breaks_cnv,
+
+    expand = expansion(
+      mult = c(
+        0,
+        0
+      )
+    )
+  ) +
+
+  labs(
+
+    title =
+      "Reactome PD-1 co-inhibition score",
+
+    subtitle =
+      pd1_reactome_subtitle_cnv,
+
+    x = NULL,
+
+    y =
+      "Mean Reactome PD-1 score",
+
+    color = NULL
+  ) +
+
+  theme_classic(
+    base_size = 12
+  ) +
+
+  theme(
+
+    legend.position = "top",
+
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      face = "bold"
+    ),
+
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5,
+      size = 14
+    ),
+
+    plot.subtitle = element_text(
+      hjust = 0.5,
+      size = 9
+    )
+  )
+
+
+print(
+  p_pd1_reactome_score_cnv
+)
+
+
+# ============================================================
+# 17. Create pathway-gene coverage table
+# ============================================================
+
+pd1_reactome_gene_coverage_cnv <- tibble::tibble(
+
+  Gene =
+    pd1_reactome_genes_requested_cnv
+
+) %>%
+  dplyr::mutate(
+
+    present_in_dataset =
+      Gene %in%
+        available_pd1_reactome_genes_cnv,
+
+    zero_variance =
+      Gene %in%
+        zero_variance_pd1_reactome_genes_cnv,
+
+    used_in_score =
+      Gene %in%
+        pd1_reactome_score_genes_used_cnv
+  )
+
+
+# ============================================================
+# 18. Save plot
+# ============================================================
+
+ggsave(
+  filename = file.path(
+    pd1_reactome_out_dir,
+    paste0(
+      "PD1_ReactomeScore_CNVFiltered_",
+      "COLLow_vs_COLHigh_Paired.pdf"
+    )
+  ),
+
+  plot =
+    p_pd1_reactome_score_cnv,
+
+  device =
+    cairo_pdf,
+
+  width = 4,
+
+  height = 4.5,
+
+  units = "in"
+)
+
+
+# ============================================================
+# 19. Save underlying values and statistics
+# ============================================================
+
+write.csv(
+  pd1_reactome_sample_summary_cnv,
+  file = file.path(
+    pd1_reactome_out_dir,
+    "PD1_ReactomeScore_SampleLevel_Values.csv"
+  ),
+  row.names = FALSE
+)
+
+
+write.csv(
+  pd1_reactome_score_pairs_cnv,
+  file = file.path(
+    pd1_reactome_out_dir,
+    "PD1_ReactomeScore_Paired_Values.csv"
+  ),
+  row.names = FALSE
+)
+
+
+write.csv(
+  pd1_reactome_score_statistics_cnv,
+  file = file.path(
+    pd1_reactome_out_dir,
+    "PD1_ReactomeScore_Paired_Statistics.csv"
+  ),
+  row.names = FALSE
+)
+
+
+write.csv(
+  pd1_reactome_gene_coverage_cnv,
+  file = file.path(
+    pd1_reactome_out_dir,
+    "PD1_ReactomeScore_Gene_Coverage.csv"
+  ),
+  row.names = FALSE
+)
+
+
+write.csv(
+  tibble::tibble(
+    Gene =
+      pd1_reactome_score_genes_used_cnv
+  ),
+  file = file.path(
+    pd1_reactome_out_dir,
+    "PD1_ReactomeScore_Genes_Used.csv"
+  ),
+  row.names = FALSE
+)
+
+
+# ============================================================
+# 20. Final results to inspect
+# ============================================================
+
+pd1_reactome_score_statistics_cnv
+
+pd1_key_gene_check_cnv
+
+cat(
+  "\nRequested pathway genes:",
+  length(
+    pd1_reactome_genes_requested_cnv
+  ),
+  "\n"
+)
+
+cat(
+  "Available pathway genes:",
+  length(
+    available_pd1_reactome_genes_cnv
+  ),
+  "\n"
+)
+
+cat(
+  "Genes used in score:",
+  length(
+    pd1_reactome_score_genes_used_cnv
+  ),
+  "\n"
+)
+
+cat(
+  "Paired tumors:",
+  n_paired_pd1_reactome_cnv,
+  "\n"
+)
+
+cat(
+  "Paired Wilcoxon p-value:",
+  pd1_reactome_p_value_cnv,
+  "\n"
+)
+```
+
+```{r}
+# ============================================================
+# CNV-filtered PD-1 pathway blocked heatmap
+#
+# Left block:  COL_Low CT/IT regions
+# Right block: COL_High CT/IT regions
+#
+# Each tile = mean gene expression within one tumor and
+# collagen category.
+#
+# Color = gene-wise z-score of tumor-level mean expression.
+# Gray = that tumor had no dots in that collagen category.
+#
+# This heatmap focuses on biologically interpretable core
+# components of the PD-1 inhibitory signaling axis rather than
+# every gene in the broad Reactome pathway.
+# ============================================================
+
+
+pd1_heatmap_out_dir <-
+  "/Data/Outputs/Manuscript/UCSC/CNV_Filtered/PD1_Reactome_Score/Heatmaps"
+
+if (!dir.exists(pd1_heatmap_out_dir)) {
+  dir.create(
+    pd1_heatmap_out_dir,
+    recursive = TRUE
+  )
+}
+
+
+# ============================================================
+# 1. Define core PD-1 pathway genes
+#
+# Groups:
+#   Receptor / ligands
+#   SHP phosphatases
+#   TCR signaling machinery
+#   PD-L1 regulatory signaling
+# ============================================================
+
+pd1_heatmap_gene_sets_cnv <- list(
+
+  `PD-1 axis` = c(
+    "PDCD1",
+    "CD274",
+    "PDCD1LG2"
+  ),
+
+  `SHP phosphatases` = c(
+    "PTPN6",
+    "PTPN11"
+  ),
+
+  `TCR signaling` = c(
+    "CD247",
+    "CD3D",
+    "CD3E",
+    "CD3G",
+    "LCK",
+    "CSK"
+  ),
+
+  `PD-L1 regulation` = c(
+    "JAK1",
+    "STAT1",
+    "STAT3",
+    "IRF1"
+  )
+)
+
+
+# Ordered vector
+genes_to_plot_pd1_cnv <- unique(
+  unlist(
+    pd1_heatmap_gene_sets_cnv,
+    use.names = FALSE
+  )
+)
+
+
+# ============================================================
+# 2. Check gene availability
+# ============================================================
+
+missing_pd1_heatmap_genes_cnv <- setdiff(
+  genes_to_plot_pd1_cnv,
+  colnames(gene_expr_gbm_cnv)
+)
+
+
+if (length(missing_pd1_heatmap_genes_cnv) > 0) {
+
+  message(
+    "Missing PD-1 heatmap genes omitted: ",
+    paste(
+      missing_pd1_heatmap_genes_cnv,
+      collapse = ", "
+    )
+  )
+}
+
+
+genes_to_plot_pd1_cnv <-
+  genes_to_plot_pd1_cnv[
+    genes_to_plot_pd1_cnv %in%
+      colnames(gene_expr_gbm_cnv)
+  ]
+
+
+stopifnot(
+  length(genes_to_plot_pd1_cnv) > 0
+)
+
+
+cat(
+  "PD-1 heatmap genes used:",
+  length(genes_to_plot_pd1_cnv),
+  "\n"
+)
+
+print(
+  genes_to_plot_pd1_cnv
+)
+
+
+# ============================================================
+# 3. Create gene-category annotation
+# ============================================================
+
+pd1_heatmap_gene_annotation_cnv <- dplyr::bind_rows(
+  lapply(
+    names(pd1_heatmap_gene_sets_cnv),
+    function(category_i) {
+
+      tibble::tibble(
+        Gene = pd1_heatmap_gene_sets_cnv[[category_i]],
+        Category = category_i
+      )
+    }
+  )
+) %>%
+  dplyr::filter(
+    Gene %in% genes_to_plot_pd1_cnv
+  ) %>%
+  dplyr::distinct(
+    Gene,
+    .keep_all = TRUE
+  )
+
+
+pd1_heatmap_gene_annotation_cnv
+
+
+# ============================================================
+# 4. Convert expression to long format
+#
+# CT and IT dots only.
+# Zero-expression dots remain included.
+# ============================================================
+
+gene_expression_long_pd1_cnv <-
+  gene_expr_gbm_cnv %>%
+
+  dplyr::filter(
+    AF_CNV %in% c(
+      "CT",
+      "IT"
+    ),
+
+    collagen_group %in% c(
+      "COL_Low",
+      "COL_High"
+    )
+  ) %>%
+
+  dplyr::select(
+    barcode,
+    sample,
+    AF_CNV,
+    collagen_group,
+    collagen_score,
+    dplyr::all_of(
+      genes_to_plot_pd1_cnv
+    )
+  ) %>%
+
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(
+      genes_to_plot_pd1_cnv
+    ),
+    names_to = "Gene",
+    values_to = "Expression"
+  ) %>%
+
+  dplyr::left_join(
+    pd1_heatmap_gene_annotation_cnv,
+    by = "Gene"
+  ) %>%
+
+  dplyr::mutate(
+
+    collagen_group = factor(
+      collagen_group,
+      levels = c(
+        "COL_Low",
+        "COL_High"
+      )
+    ),
+
+    Gene = factor(
+      Gene,
+      levels = genes_to_plot_pd1_cnv
+    )
+  )
+
+
+stopifnot(
+  all(
+    gene_expression_long_pd1_cnv$AF_CNV %in%
+      c(
+        "CT",
+        "IT"
+      )
+  )
+)
+
+
+# ============================================================
+# 5. Establish tumor and group order
+# ============================================================
+
+sample_order_pd1_heatmap_cnv <- sort(
+  unique(
+    gene_expression_long_pd1_cnv$sample
+  )
+)
+
+
+collagen_group_order_pd1_heatmap_cnv <- c(
+  "COL_Low",
+  "COL_High"
+)
+
+
+# ============================================================
+# 6. Calculate tumor-level mean expression
+#
+# One value for every:
+# Gene × tumor × collagen group
+# ============================================================
+
+gene_sample_summary_pd1_cnv <-
+  gene_expression_long_pd1_cnv %>%
+
+  dplyr::mutate(
+    Gene = as.character(Gene),
+
+    collagen_group = as.character(
+      collagen_group
+    )
+  ) %>%
+
+  dplyr::group_by(
+    Gene,
+    Category,
+    sample,
+    collagen_group
+  ) %>%
+
+  dplyr::summarise(
+
+    n_dots = dplyr::n(),
+
+    mean_expression = mean(
+      Expression,
+      na.rm = TRUE
+    ),
+
+    percent_detected = 100 * mean(
+      Expression > 0,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+
+# ============================================================
+# 7. Add missing tumor / collagen-group combinations
+#
+# Missing category:
+#   n_dots = 0
+#   expression = NA
+# ============================================================
+
+gene_sample_summary_pd1_cnv_complete <-
+  gene_sample_summary_pd1_cnv %>%
+
+  tidyr::complete(
+
+    tidyr::nesting(
+      Gene,
+      Category
+    ),
+
+    sample =
+      sample_order_pd1_heatmap_cnv,
+
+    collagen_group =
+      collagen_group_order_pd1_heatmap_cnv,
+
+    fill = list(
+      n_dots = 0,
+      mean_expression = NA_real_,
+      percent_detected = NA_real_
+    )
+  )
+
+
+# ============================================================
+# 8. Calculate gene-wise z-scores
+#
+# Z-score is calculated across tumor-level means from BOTH
+# collagen categories.
+#
+# This allows comparison of relative expression patterns
+# between tumors and collagen groups for each gene.
+# ============================================================
+
+gene_sample_heatmap_pd1_cnv <-
+  gene_sample_summary_pd1_cnv_complete %>%
+
+  dplyr::group_by(
+    Gene
+  ) %>%
+
+  dplyr::mutate(
+
+    gene_mean = mean(
+      mean_expression,
+      na.rm = TRUE
+    ),
+
+    gene_sd = stats::sd(
+      mean_expression,
+      na.rm = TRUE
+    ),
+
+    mean_expression_z = dplyr::case_when(
+
+      is.na(mean_expression) ~
+        NA_real_,
+
+      !is.finite(gene_mean) ~
+        0,
+
+      is.na(gene_sd) ~
+        0,
+
+      gene_sd == 0 ~
+        0,
+
+      TRUE ~
+        (
+          mean_expression -
+            gene_mean
+        ) /
+        gene_sd
+    )
+  ) %>%
+
+  dplyr::ungroup()
+
+
+# ============================================================
+# 9. Set factor order
+#
+# Reverse gene order so PDCD1 is displayed at the top.
+# ============================================================
+
+pd1_gene_order_for_plot_cnv <- rev(
+  genes_to_plot_pd1_cnv
+)
+
+
+gene_sample_heatmap_pd1_cnv <-
+  gene_sample_heatmap_pd1_cnv %>%
+
+  dplyr::mutate(
+
+    sample = factor(
+      sample,
+      levels =
+        sample_order_pd1_heatmap_cnv
+    ),
+
+    collagen_group = factor(
+      collagen_group,
+      levels =
+        collagen_group_order_pd1_heatmap_cnv
+    ),
+
+    Gene = factor(
+      Gene,
+      levels =
+        pd1_gene_order_for_plot_cnv
+    )
+  )
+
+
+# ============================================================
+# 10. Create blocked PD-1 pathway heatmap
+# ============================================================
+
+p_gene_heatmap_pd1_cnv <- ggplot(
+  gene_sample_heatmap_pd1_cnv,
+  aes(
+    x = sample,
+    y = Gene,
+    fill = mean_expression_z
+  )
+) +
+
+  geom_tile(
+    color = "white",
+    linewidth = 0.4
+  ) +
+
+  facet_grid(
+    cols = vars(
+      collagen_group
+    ),
+    scales = "free_x",
+    space = "free_x",
+    drop = FALSE
+  ) +
+
+  scale_x_discrete(
+    drop = FALSE
+  ) +
+
+  scale_fill_gradient2(
+    low = "steelblue",
+    mid = "white",
+    high = "firebrick",
+    midpoint = 0,
+
+    limits = c(
+      -2,
+      2
+    ),
+
+    oob = scales::squish,
+
+    na.value = "grey75",
+
+    name = paste0(
+      "Mean expression\n",
+      "z-score"
+    )
+  ) +
+
+  labs(
+
+    title =
+      "PD-1 pathway expression in CNV-filtered GBM regions",
+
+    subtitle = paste0(
+      "CT and IT dots only; tumor-level mean expression; ",
+      "gray indicates no dots in that collagen category"
+    ),
+
+    x = NULL,
+    y = NULL
+  ) +
+
+  theme_classic(
+    base_size = 11
+  ) +
+
+  theme(
+
+    axis.line =
+      element_blank(),
+
+    axis.ticks =
+      element_blank(),
+
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      vjust = 0.5,
+      size = 7
+    ),
+
+    axis.text.y = element_text(
+      face = "italic",
+      size = 9
+    ),
+
+    strip.background = element_rect(
+      fill = "grey92",
+      color = "black",
+      linewidth = 0.7
+    ),
+
+    strip.text = element_text(
+      face = "bold",
+      size = 11
+    ),
+
+    panel.spacing.x = grid::unit(
+      0.35,
+      "cm"
+    ),
+
+    legend.position = "right",
+
+    plot.title = element_text(
+      face = "bold",
+      hjust = 0.5
+    ),
+
+    plot.subtitle = element_text(
+      hjust = 0.5,
+      size = 9
+    )
+  )
+
+
+print(
+  p_gene_heatmap_pd1_cnv
+)
+
+
+# ============================================================
+# 11. Save heatmap
+# ============================================================
+
+pd1_heatmap_height_cnv <- max(
+  5,
+  0.32 *
+    length(
+      genes_to_plot_pd1_cnv
+    ) +
+    2
+)
+
+
+ggsave(
+
+  filename = file.path(
+    pd1_heatmap_out_dir,
+    paste0(
+      "PD1_CorePathway_CNVFiltered_",
+      "COLLow_COLHigh_Heatmap.pdf"
+    )
+  ),
+
+  plot =
+    p_gene_heatmap_pd1_cnv,
+
+  device =
+    cairo_pdf,
+
+  width = 9,
+
+  height =
+    pd1_heatmap_height_cnv,
+
+  units = "in"
+)
+
+
+# ============================================================
+# 12. Save underlying heatmap data
+# ============================================================
+
+write.csv(
+
+  gene_sample_heatmap_pd1_cnv,
+
+  file = file.path(
+    pd1_heatmap_out_dir,
+    paste0(
+      "PD1_CorePathway_CNVFiltered_",
+      "Heatmap_Data.csv"
+    )
+  ),
+
+  row.names = FALSE
+)
+
+
+write.csv(
+
+  pd1_heatmap_gene_annotation_cnv,
+
+  file = file.path(
+    pd1_heatmap_out_dir,
+    "PD1_CorePathway_Gene_Categories.csv"
+  ),
+
+  row.names = FALSE
+)
+
+
+# ============================================================
+# 13. Inspect final results
+# ============================================================
+
+dim(
+  gene_sample_heatmap_pd1_cnv
+)
+
+
+genes_to_plot_pd1_cnv
+
+
+missing_pd1_heatmap_genes_cnv
+
+
+gene_sample_heatmap_pd1_cnv %>%
+  dplyr::select(
+    Gene,
+    sample,
+    collagen_group,
+    mean_expression,
+    mean_expression_z,
+    percent_detected
+  ) %>%
+  print(
+    n = 30
+  )
 ```
 
