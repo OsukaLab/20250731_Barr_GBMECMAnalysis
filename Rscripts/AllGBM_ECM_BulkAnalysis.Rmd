@@ -2113,6 +2113,94 @@ ggsave(
 )
 ```
 
+```{r}
+# ============================================================
+# COL1A1 vs COL3A1 correlation in all CGGA GBM tumors
+# One-color publication version
+# ============================================================
+
+stopifnot(
+  exists("expr_adj_all"),
+  exists("sample_meta_all"),
+  all(c("COL1A1", "COL3A1") %in% rownames(expr_adj_all))
+)
+
+corr_df <- data.frame(
+  sample_id = colnames(expr_adj_all),
+  COL1A1 = as.numeric(expr_adj_all["COL1A1", ]),
+  COL3A1 = as.numeric(expr_adj_all["COL3A1", ])
+) %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::filter(group %in% c("GBM", "rGBM"))
+
+# Pearson correlation
+cor_res <- cor.test(
+  corr_df$COL1A1,
+  corr_df$COL3A1,
+  method = "pearson"
+)
+
+r_label <- paste0(
+  "Pearson r = ",
+  round(unname(cor_res$estimate), 2)
+)
+
+p_label <- ifelse(
+  cor_res$p.value < 0.001,
+  "P < 0.001",
+  paste0("P = ", signif(cor_res$p.value, 3))
+)
+
+col_corr_plot <- ggplot(
+  corr_df,
+  aes(x = COL1A1, y = COL3A1)
+) +
+  geom_point(
+    color = "#4C78A8",
+    size = 2,
+    alpha = 0.65
+  ) +
+  geom_smooth(
+    method = "lm",
+    se = TRUE,
+    color = "black",
+    linewidth = 0.8
+  ) +
+  annotate(
+    "text",
+    x = min(corr_df$COL1A1, na.rm = TRUE),
+    y = max(corr_df$COL3A1, na.rm = TRUE),
+    label = paste(r_label, p_label, sep = "\n"),
+    hjust = 0,
+    vjust = 1,
+    size = 4
+  ) +
+  labs(
+    x = "COL1A1 expression",
+    y = "COL3A1 expression"
+  ) +
+  theme_classic(base_size = 12)
+
+print(col_corr_plot)
+
+# Save as editable vector PDF
+out_dir <- "/Data/Outputs/Manuscript"
+if (!dir.exists(out_dir)) {
+  dir.create(out_dir, recursive = TRUE)
+}
+
+ggsave(
+  filename = file.path(
+    out_dir,
+    "CGGA_GBM_COL1A1_vs_COL3A1_correlation.pdf"
+  ),
+  plot = col_corr_plot,
+  device = cairo_pdf,
+  width = 4,
+  height = 4,
+  units = "in"
+)
+```
 
 #### Collagen score high vs low only in rGBM
 
