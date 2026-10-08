@@ -1633,6 +1633,7 @@ write.csv(
   row.names = FALSE
 )
 ```
+
 ```{r}
 out_dir <- "/Data/Outputs/Manuscript"
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
@@ -1647,6 +1648,107 @@ ggsave(
   dpi      = 300
 )
 ```
+
+```{r}
+
+# ============================================================
+# Figure 1B - NEW Volcano with COL1A1, COL1A2, COL3A1
+# ============================================================
+
+# Genes to highlight
+collagen_genes <- c("COL1A1", "COL1A2", "COL3A1")
+
+# Create a NEW dataset without modifying the original
+vol_rg_collagen <- vol_rg %>%
+  mutate(
+    point_size = ifelse(Gene_Name %in% collagen_genes, 3.5, 1.2)
+  )
+
+# Extract collagen genes
+collagen_labels <- vol_rg_collagen %>%
+  filter(Gene_Name %in% collagen_genes)
+
+# Check their actual results
+print(
+  collagen_labels %>%
+   dplyr::select(Gene_Name, logFC, adj.P.Val, direction)
+)
+
+stopifnot("COL1A2" %in% collagen_labels$Gene_Name)
+
+# Build a brand-new volcano plot
+rgbm_volcano_collagen <- ggplot(
+  vol_rg_collagen,
+  aes(x = logFC, y = neglog10FDR)
+) +
+  geom_point(
+    aes(color = direction, size = point_size),
+    alpha = 0.7
+  ) +
+  scale_size_identity() +
+  geom_hline(
+    yintercept = -log10(fdr_cutoff),
+    linetype = "dashed"
+  ) +
+  geom_vline(
+    xintercept = c(-logfc_cutoff, logfc_cutoff),
+    linetype = "dotted"
+  ) +
+  ggrepel::geom_text_repel(
+    data = collagen_labels,
+    aes(label = Gene_Name),
+    size = 4,
+    fontface = "bold",
+    color = "black",
+    box.padding = 0.5,
+    point.padding = 0.3,
+    min.segment.length = 0,
+    max.overlaps = Inf,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(
+    values = c(
+      "Up in rGBM" = "firebrick",
+      "Up in GBM" = "steelblue",
+      "Not significant" = "grey70"
+    )
+  ) +
+  labs(
+    title = "rGBM vs Primary GBM",
+    subtitle = paste0(
+      "FDR < ", fdr_cutoff,
+      " | |logFC| ≥ ", logfc_cutoff
+    ),
+    x = "logFC (rGBM / GBM)",
+    y = "-log10(FDR)",
+    color = ""
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "top"
+  )
+
+# Display
+print(rgbm_volcano_collagen)
+
+# Save as a NEW PDF
+ggsave(
+  filename = file.path(
+    out_dir,
+    "rGBM_vs_GBM_Volcano_Collagen_Labeled.pdf"
+  ),
+  plot = rgbm_volcano_collagen,
+  device = cairo_pdf,
+  width = 4,
+  height = 4,
+  units = "in",
+  dpi = 300
+)
+
+```
+
 
 ```{r}
 # ============================================================
@@ -4113,8 +4215,6 @@ stopifnot(
   "OS_event" %in% colnames(sample_meta_all)
 )
 
-library(dplyr)
-
 surv_df <- sample_meta_all %>%
   dplyr::filter(group %in% c("GBM", "rGBM")) %>%
   dplyr::filter(!is.na(CollagenScore), !is.na(TGFb_score)) %>%
@@ -4152,11 +4252,8 @@ stopifnot(length(unique(surv_df$JointGroup)) == 2)
 # Kaplan–Meier: Double-low vs Double-high
 # ============================================================
 
-library(survival)
-library(survminer)
-
 fit_km <- survfit(
-  Surv(OS_days, OS_event) ~ JointGroup,
+  Surv(OS_years, OS_event) ~ JointGroup,
   data = surv_df
 )
 
@@ -4173,13 +4270,14 @@ p_surv <- ggsurvplot(
   fit_km,
   data = surv_df,
   risk.table = TRUE,
-  pval = TRUE,
+  pval = FALSE,
   conf.int = FALSE,
   palette = c("steelblue", "firebrick"),
   legend.title = "",
   legend.labs = c("Low COL / Low TGF-β", "High COL / High TGF-β"),
-  xlab = "Time (days)",
+  xlab = "Time (years)",
   ylab = "Overall survival probability",
+  break.time.by = 1,
   title = "Combined collagen and TGF-β signaling stratify survival in GBM",
   risk.table.height = 0.25,
   ggtheme = theme_bw(base_size = 11) +
