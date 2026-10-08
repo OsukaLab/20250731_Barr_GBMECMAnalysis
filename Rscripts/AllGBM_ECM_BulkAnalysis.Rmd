@@ -389,6 +389,41 @@ sample_meta_all <- sample_meta_all %>%
 
 ```
 
+```{r}
+
+# Audit retained CGGA samples by original histology
+
+library(dplyr)
+
+filtered_sample_audit <- bind_rows(
+  cgga693_meta_gbm_ord %>%
+    mutate(Cohort = "CGGA693"),
+  cgga325_meta_gbm_ord %>%
+    mutate(Cohort = "CGGA325")
+)
+
+# Number of samples by cohort and histology
+filtered_sample_audit %>%
+  count(Cohort, Histology, name = "N") %>%
+  arrange(Cohort, Histology) %>%
+  print(n = Inf)
+
+# Review exact molecular metadata categories
+filtered_sample_audit %>%
+  count(
+    IDH_mutation_status,
+    `1p19q_codeletion_status`,
+    name = "N"
+  ) %>%
+  print(n = Inf)
+
+# Final groups used in downstream analysis
+sample_meta_all %>%
+  count(cohort, group, name = "N") %>%
+  print(n = Inf)
+
+```
+
 ### Normalization and QC
 
 ```{r}
@@ -2302,6 +2337,31 @@ ggsave(
   height = 4,
   units = "in"
 )
+```
+```{r}
+
+# Supplementary Figure 1B - Correlation statistics
+
+col_corr_data <- data.frame(
+  sample_id = colnames(expr_adj_all),
+  COL1A1 = as.numeric(expr_adj_all["COL1A1", ]),
+  COL3A1 = as.numeric(expr_adj_all["COL3A1", ])
+) %>%
+  dplyr::left_join(sample_meta_all, by = "sample_id") %>%
+  dplyr::filter(group %in% c("GBM", "rGBM")) %>%
+  dplyr::filter(!is.na(COL1A1), !is.na(COL3A1))
+
+col_corr_test <- cor.test(
+  col_corr_data$COL1A1,
+  col_corr_data$COL3A1,
+  method = "pearson"
+)
+
+cat("N =", nrow(col_corr_data), "\n")
+cat("Pearson r =", unname(col_corr_test$estimate), "\n")
+cat("P-value =", format.pval(col_corr_test$p.value), "\n")
+cat("95% CI =", col_corr_test$conf.int, "\n")
+
 ```
 
 #### Collagen score high vs low only in rGBM
