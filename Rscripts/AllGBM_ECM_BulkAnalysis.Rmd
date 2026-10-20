@@ -1405,6 +1405,34 @@ ggsave(
 ```
 
 ```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 1C
+# Individual-sample collagen expression
+# ============================================================
+
+fig1c_data <- gene_df %>%
+  dplyr::select(Gene, sample_id, group, expr) %>%
+  dplyr::arrange(Gene, group, sample_id)
+
+# Verify 347 samples per gene
+stopifnot(nrow(fig1c_data) == 1041)
+
+print(fig1c_data %>% dplyr::count(Gene, group))
+
+# Export
+out_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+write.csv(
+  fig1c_data,
+  file.path(out_dir, "Fig1C_Collagen_Expression.csv"),
+  row.names = FALSE
+)
+
+```
+
+```{r}
 stopifnot(exists("gene_df"))
 
 # Ensure factor levels are set
@@ -2315,6 +2343,36 @@ write.csv(
 ```
 
 ```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 2A
+# Collagen High vs Low volcano plot
+# ============================================================
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+fig2a_data <- de_col_high_vs_low %>%
+  dplyr::mutate(
+    neglog10FDR = -log10(pmax(adj.P.Val, .Machine$double.xmin)),
+    direction = dplyr::case_when(
+      adj.P.Val < 0.05 & logFC >= 1 ~ "Up in CollagenHigh",
+      adj.P.Val < 0.05 & logFC <= -1 ~ "Up in CollagenLow",
+      TRUE ~ "Not significant"
+    )
+  )
+
+write.csv(
+  fig2a_data,
+  file.path(jci_dir, "Fig2A_CollagenHigh_vs_Low_Volcano.csv"),
+  row.names = FALSE
+)
+
+cat("Figure 2A exported:", nrow(fig2a_data), "genes\n")
+
+```
+
+```{r}
 # Volcano: CollagenHigh vs CollagenLow (ALL tumors)
 # Label top 10 up + top 10 down
 
@@ -2637,6 +2695,34 @@ write.csv(
 ```
 
 ```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 2B
+# GO Biological Process GSEA
+# ============================================================
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Export the 10 pathways shown in Figure 2B
+write.csv(
+  top10_pos_col,
+  file.path(jci_dir, "Fig2B_GSEA_Top10.csv"),
+  row.names = FALSE
+)
+
+# Preserve complete GSEA results
+write.csv(
+  as.data.frame(gsea_col_bp@result),
+  file.path(jci_dir, "Fig2B_GSEA_All_Pathways.csv"),
+  row.names = FALSE
+)
+
+print(top10_pos_col)
+
+```
+
+```{r}
 # Bar plot: Top 10 enriched in CollagenHigh
 
 
@@ -2794,6 +2880,82 @@ ggsave(
 ```
 
 ```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 4B
+# TGF-beta GSEA enrichment plot
+# ============================================================
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+tgfb_id <- "GO:0007179"
+
+stopifnot(
+  tgfb_id %in% gsea_col_bp@result$ID
+)
+
+# Every ranked gene underlying the enrichment plot
+
+# Figure 4B — GSEA underlying values
+
+tgfb_id <- "GO:0007179"
+
+# Access enrichplot's internal GSEA data function
+gs_info <- getFromNamespace(
+  "gsInfo", "enrichplot"
+)(gsea_col_bp, tgfb_id)
+
+# Export all ranked genes and enrichment scores
+fig4b_data <- gs_info %>%
+  dplyr::transmute(
+    Rank = x,
+    Gene = names(gsea_col_bp@geneList)[x],
+    Ranked_LogFC = geneList,
+    Running_ES = runningScore,
+    Pathway_Hit = position == 1
+  )
+
+write.csv(
+  fig4b_data,
+  file.path(
+    jci_dir,
+    "Fig4B_TGFB_GSEA_Enrichment.csv"
+  ),
+  row.names = FALSE
+)
+
+cat("Exported", nrow(fig4b_data), "ranked genes\n")
+head(fig4b_data)
+
+
+# Pathway-level statistics
+fig4b_stats <- gsea_col_bp@result %>%
+  dplyr::filter(ID == tgfb_id) %>%
+  dplyr::select(
+    ID,
+    Description,
+    setSize,
+    enrichmentScore,
+    NES,
+    pvalue,
+    p.adjust,
+    core_enrichment
+  )
+
+write.csv(
+  fig4b_stats,
+  file.path(jci_dir, "Fig4B_TGFB_GSEA_Statistics.csv"),
+  row.names = FALSE
+)
+
+cat("Ranked genes:", nrow(fig4b_data), "\n")
+print(fig4b_stats)
+
+```
+
+
+```{r}
 # ============================================================
 #  TGF-β GSEA statistics table
 # ============================================================
@@ -2910,6 +3072,49 @@ cor_res <- cor.test(
   corr_df$TGFb_score,
   method = "pearson"
 )
+
+
+# ============================================================
+# JCI Supporting Data Values — Figure 4C
+# Collagen vs TGF-beta pathway correlation
+# ============================================================
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Individual patient data used in the scatter plot
+fig4c_data <- corr_df %>%
+  dplyr::select(
+    sample_id,
+    group,
+    CollagenScore,
+    TGFb_score
+  ) %>%
+  dplyr::arrange(sample_id)
+
+write.csv(
+  fig4c_data,
+  file.path(jci_dir, "Fig4C_Collagen_TGFB_Correlation.csv"),
+  row.names = FALSE
+)
+
+# Pearson correlation statistics
+fig4c_stats <- data.frame(
+  n = nrow(fig4c_data),
+  Pearson_r = unname(cor_res$estimate),
+  P_value = cor_res$p.value,
+  CI_lower = cor_res$conf.int[1],
+  CI_upper = cor_res$conf.int[2]
+)
+
+write.csv(
+  fig4c_stats,
+  file.path(jci_dir, "Fig4C_Correlation_Statistics.csv"),
+  row.names = FALSE
+)
+
+print(fig4c_stats)
+
 
 r_label <- sprintf(
   "Pearson r = %.2f\np = %.2g",
@@ -3155,6 +3360,36 @@ survival_expr_long <- survival_expr_long %>%
 survival_expr_long %>%
   dplyr::count(Gene, Expression_Group)
 ```
+```{r}
+
+# JCI Supporting Data Values - Figure 1D
+
+fig1d_data <- survival_expr_long %>%
+  dplyr::filter(Gene %in% c("COL1A1", "COL1A2", "COL3A1")) %>%
+  dplyr::select(
+    Gene, sample_id, group, cohort,
+    expression, median_expression,
+    Expression_Group, OS_days, OS_years, OS_event
+  )
+
+# Check sample counts
+print(fig1d_data %>% dplyr::count(Gene, Expression_Group))
+stopifnot(nrow(fig1d_data) == 954)
+
+# Export CSV
+out_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+write.csv(
+  fig1d_data,
+  file.path(out_dir, "Fig1D_Collagen_Survival.csv"),
+  row.names = FALSE
+)
+
+```
+
+
+
 ```{r}
 out_dir <- "/Data/Outputs/Manuscript/Gene_Survival"
 
@@ -4148,6 +4383,53 @@ stopifnot(length(unique(surv_df$JointGroup)) == 2)
 ```
 
 ```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 4D
+# ============================================================
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Capture the ALL-GBM survival data before it is overwritten
+fig4d_data <- surv_df %>%
+  dplyr::select(
+    sample_id,
+    group,
+    CollagenScore,
+    TGFb_score,
+    JointGroup,
+    OS_days,
+    OS_event
+  ) %>%
+  dplyr::arrange(JointGroup, sample_id)
+
+# Export individual patient data
+write.csv(
+  fig4d_data,
+  file.path(jci_dir, "Fig4D_Collagen_TGFB_Survival.csv"),
+  row.names = FALSE
+)
+
+# Calculate log-rank statistics
+fig4d_logrank <- survival::survdiff(
+  survival::Surv(OS_days, OS_event) ~ JointGroup,
+  data = fig4d_data
+)
+
+fig4d_p <- stats::pchisq(
+  fig4d_logrank$chisq,
+  df = 1,
+  lower.tail = FALSE
+)
+
+# Verify results
+print(table(fig4d_data$JointGroup))
+cat("Log-rank P =", fig4d_p, "\n")
+
+```
+
+```{r}
 # ============================================================
 # Kaplan–Meier: Double-low vs Double-high
 # ============================================================
@@ -4207,6 +4489,7 @@ ggsave(
   dpi      = 300
 )
 ```
+
 
 ```{r}
 # ============================================================
@@ -4736,6 +5019,37 @@ top10_pos_bp <- gsea_bp@result %>%
 ```
 
 ```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 4A
+# Spatial GO Biological Process enrichment
+# ============================================================
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+fig4a_data <- top10_pos_bp %>%
+  dplyr::select(
+    ID,
+    Description,
+    NES,
+    pvalue,
+    p.adjust,
+    core_enrichment
+  )
+
+write.csv(
+  fig4a_data,
+  file.path(jci_dir, "Fig4A_Spatial_GSEA_Top10.csv"),
+  row.names = FALSE
+)
+
+print(fig4a_data, n = Inf)
+stopifnot(nrow(fig4a_data) == 10)
+
+```
+
+```{r}
 gsea_df_bp <- top10_pos_bp %>%
   dplyr::mutate(
     Description = factor(Description, levels = rev(Description))
@@ -5221,6 +5535,53 @@ head(gene_expr_gbm[, 1:8])
 ```
 
 
+```{r}
+
+# ============================================================
+# Prepare selected-gene expression data
+# Unfiltered GBM spatial analysis
+# ============================================================
+
+genes_to_plot <- c(
+  "FOXP3", "IL2RA", "CTLA4", "TIGIT",
+  "PDCD1", "HAVCR2", "LAG3", "TOX",
+  "CD163", "MRC1", "MSR1", "ARG1",
+  "CD14", "HLA-DRA", "S100A8", "S100A9",
+  "CD33", "NOS2", "IL10"
+)
+
+# Confirm genes exist
+stopifnot(
+  all(genes_to_plot %in% colnames(gene_expr_gbm))
+)
+
+# Convert wide expression matrix to long format
+gene_expression_long <- gene_expr_gbm %>%
+  dplyr::select(
+    barcode,
+    sample,
+    collagen_group,
+    collagen_score,
+    dplyr::all_of(genes_to_plot)
+  ) %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(genes_to_plot),
+    names_to = "Gene",
+    values_to = "Expression"
+  ) %>%
+  dplyr::mutate(
+    Gene = factor(Gene, levels = genes_to_plot)
+  )
+
+# Validate
+stopifnot(
+  nrow(gene_expression_long) ==
+    nrow(gene_expr_gbm) * length(genes_to_plot)
+)
+
+print(dim(gene_expression_long))
+
+```
 
 ```{r}
 # ============================================================
@@ -5232,10 +5593,6 @@ head(gene_expr_gbm[, 1:8])
 # to that collagen category.
 # ============================================================
 
-library(dplyr)
-library(tidyr)
-library(ggplot2)
-library(scales)
 
 heatmap_out_dir <- file.path(
   out_dir,
@@ -5570,6 +5927,8 @@ write.csv(
   row.names = FALSE
 )
 ```
+
+
 ```{r}
 # ============================================================
 # Sample-level paired analysis:
@@ -6924,6 +7283,40 @@ write.csv(
   row.names = FALSE
 )
 ```
+```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 2E
+# CNV-filtered spatial gene expression heatmap
+# ============================================================
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+fig2e_data <- gene_sample_heatmap_cnv %>%
+  dplyr::select(
+    Gene,
+    sample,
+    collagen_group,
+    n_dots,
+    mean_expression,
+    mean_expression_z,
+    percent_detected
+  ) %>%
+  dplyr::arrange(Gene, collagen_group, sample)
+
+write.csv(
+  fig2e_data,
+  file.path(jci_dir, "Fig2E_Spatial_Heatmap.csv"),
+  row.names = FALSE
+)
+
+cat("Figure 2E exported:", nrow(fig2e_data), "rows\n")
+
+```
+
+
+
 ```{r}
 # ============================================================
 # CNV-filtered paired sample-level gene-expression plots
@@ -9025,6 +9418,56 @@ write.csv(
   row.names = FALSE
 )
 ```
+```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 2F
+# Spatial immune signature scores
+# ============================================================
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+fig2f_programs <- c(
+  "Regulatory_T_cells",
+  "M2_macrophage",
+  "P_MDSC",
+  "M_MDSC",
+  "NK_cells"
+)
+
+# Individual tumor-level values (each plotted point)
+fig2f_data <- immune_sample_summary_cnv %>%
+  dplyr::filter(
+    Immune_program %in% fig2f_programs
+  ) %>%
+  dplyr::arrange(
+    Immune_program, sample, collagen_group
+  )
+
+write.csv(
+  fig2f_data,
+  file.path(jci_dir, "Fig2F_Immune_Scores.csv"),
+  row.names = FALSE
+)
+
+# Paired comparisons and statistical results
+fig2f_stats <- immune_paired_statistics_cnv %>%
+  dplyr::filter(
+    Immune_program %in% fig2f_programs
+  )
+
+write.csv(
+  fig2f_stats,
+  file.path(jci_dir, "Fig2F_Immune_Statistics.csv"),
+  row.names = FALSE
+)
+
+print(fig2f_stats)
+
+```
+
+
 ```{r}
 # ============================================================
 # Paired analysis of TGF-beta-related genes
@@ -12513,6 +12956,61 @@ cat(
   "\n"
 )
 ```
+```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 6B
+# PD-1 Reactome pathway scores
+# ============================================================
+
+source_dir <- paste0(
+  "/Data/Outputs/Manuscript/UCSC/CNV_Filtered/",
+  "PD1_Reactome_Score"
+)
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Original files
+source_files <- file.path(
+  source_dir,
+  c(
+    "PD1_ReactomeScore_SampleLevel_Values.csv",
+    "PD1_ReactomeScore_Paired_Values.csv",
+    "PD1_ReactomeScore_Paired_Statistics.csv"
+  )
+)
+
+# JCI output filenames
+destination_files <- file.path(
+  jci_dir,
+  c(
+    "Fig6B_PD1_Scores_PerTumor.csv",
+    "Fig6B_PD1_Scores_Paired.csv",
+    "Fig6B_PD1_Statistics.csv"
+  )
+)
+
+stopifnot(all(file.exists(source_files)))
+
+copied <- file.copy(
+  source_files,
+  destination_files,
+  overwrite = TRUE
+)
+
+stopifnot(all(copied))
+
+# Verify statistics
+fig6b_stats <- read.csv(destination_files[3])
+print(fig6b_stats)
+
+# Verify paired tumor values
+fig6b_pairs <- read.csv(destination_files[2])
+print(fig6b_pairs)
+
+```
+
 
 ```{r}
 # ============================================================
@@ -13148,5 +13646,40 @@ gene_sample_heatmap_pd1_cnv %>%
   print(
     n = 30
   )
+```
+```{r}
+
+# ============================================================
+# JCI Supporting Data Values — Figure 6A
+# PD-1 signaling heatmap
+# ============================================================
+
+source_file <- paste0(
+  "/Data/Outputs/Manuscript/UCSC/CNV_Filtered/",
+  "PD1_Reactome_Score/Heatmaps/",
+  "PD1_CorePathway_CNVFiltered_Heatmap_Data.csv"
+)
+
+jci_dir <- "/Data/Outputs/Manuscript/JCI_SupportingData"
+dir.create(jci_dir, recursive = TRUE, showWarnings = FALSE)
+
+stopifnot(file.exists(source_file))
+
+copied <- file.copy(
+  source_file,
+  file.path(jci_dir, "Fig6A_PD1_Heatmap.csv"),
+  overwrite = TRUE
+)
+
+stopifnot(copied)
+
+# Verify
+fig6a_data <- read.csv(
+  file.path(jci_dir, "Fig6A_PD1_Heatmap.csv")
+)
+
+print(dim(fig6a_data))
+print(head(fig6a_data))
+
 ```
 
